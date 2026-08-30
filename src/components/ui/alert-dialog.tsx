@@ -1,2 +1,35 @@
-import * as A from "@radix-ui/react-alert-dialog";import {Button} from "./button";
-export function ConfirmCancel({open,onOpenChange,onConfirm}:{open:boolean;onOpenChange:(v:boolean)=>void;onConfirm:()=>void}){return <A.Root open={open} onOpenChange={onOpenChange}><A.Portal><A.Overlay className="fixed inset-0 z-40 bg-black/70"/><A.Content className="fixed left-1/2 top-1/2 z-50 w-[min(28rem,90vw)] -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-card p-6 shadow-2xl"><A.Title className="text-lg font-semibold">Cancel export?</A.Title><A.Description className="mt-2 text-sm text-muted-foreground">The partial output will be removed and no path will be printed.</A.Description><div className="mt-6 flex justify-end gap-2"><A.Cancel asChild><Button variant="secondary">Keep exporting</Button></A.Cancel><A.Action asChild><Button variant="destructive" onClick={onConfirm}>Cancel export</Button></A.Action></div></A.Content></A.Portal></A.Root>}
+import * as A from "@radix-ui/react-alert-dialog";
+import { Button } from "./button";
+export function ConfirmCancel({
+  open,
+  onOpenChange,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <A.Root open={open} onOpenChange={onOpenChange}>
+      <A.Portal>
+        <A.Overlay className="fixed inset-0 z-40 bg-black/70" />
+        <A.Content className="fixed left-1/2 top-1/2 z-50 w-[min(28rem,90vw)] -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-card p-6 shadow-2xl">
+          <A.Title className="text-lg font-semibold">Cancel export?</A.Title>
+          <A.Description className="mt-2 text-sm text-muted-foreground">
+            The partial output will be removed and no path will be printed.
+          </A.Description>
+          <div className="mt-6 flex justify-end gap-2">
+            <A.Cancel asChild>
+              <Button variant="secondary">Keep exporting</Button>
+            </A.Cancel>
+            <A.Action asChild>
+              <Button variant="destructive" onClick={onConfirm}>
+                Cancel export
+              </Button>
+            </A.Action>
+          </div>
+        </A.Content>
+      </A.Portal>
+    </A.Root>
+  );
+}

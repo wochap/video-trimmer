@@ -1,1 +1,5 @@
-import VideoTrimmer from "./VideoTrimmer";import "./styles.css";export default function App(){return <VideoTrimmer/>}
+import VideoTrimmer from "./VideoTrimmer";
+import "./styles.css";
+export default function App() {
+  return <VideoTrimmer />;
+}
