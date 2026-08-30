@@ -16,7 +16,7 @@ pub struct MediaState {
     pub current: Mutex<Option<CurrentMedia>>,
 }
 pub struct CurrentMedia {
-    pub input: PathBuf,
+    pub preview: PathBuf,
     pub cache: PathBuf,
     pub thumbnails: Vec<PathBuf>,
 }
@@ -190,6 +190,58 @@ fn thumbnails(path: &Path, duration: u64) -> Result<(PathBuf, Vec<String>), Stri
     files.sort();
     Ok((root, files))
 }
+// Source MP4s often carry sparse keyframes, invalid H.264 levels, or VUI
+// timing that GStreamer's h264parse rejects, all of which make WebKitGTK
+// drop the frames at a seek target and flash black. Re-encoding a proxy
+// with dense keyframes, a leading moov atom, and fresh timing metadata
+// keeps trim-point timestamps intact while making seeks land instantly.
+// `-t` pins the proxy to the probed duration so the player's clock agrees
+// with the timeline even when the source container duration is wrong.
+fn preview_proxy(input: &Path, duration_micros: u64, dir: &Path) -> Result<PathBuf, String> {
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let proxy = dir.join("proxy.mp4");
+    let status = Command::new("ffmpeg")
+        .args(["-hide_banner", "-nostdin", "-loglevel", "error"])
+        .arg("-t")
+        .arg(format!("{:.6}", duration_micros as f64 / 1e6))
+        .arg("-i")
+        .arg(input)
+        .args([
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
+            "-vf",
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "28",
+            "-g",
+            "30",
+            "-keyint_min",
+            "30",
+            "-sc_threshold",
+            "0",
+            "-fps_mode",
+            "vfr",
+            "-c:a",
+            "copy",
+            "-movflags",
+            "+faststart",
+            "-y",
+        ])
+        .arg(&proxy)
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !status.success() {
+        let _ = fs::remove_file(&proxy);
+        return Err("FFmpeg could not build the preview proxy".into());
+    }
+    Ok(proxy)
+}
 #[tauri::command]
 pub async fn load_input(
     app: tauri::AppHandle,
@@ -220,6 +272,11 @@ pub async fn load_input(
             .allow_file(path)
             .map_err(|e| AppError::Internal(e.to_string()))?;
     }
+    let preview_file =
+        preview_proxy(&canonical, metadata.duration_micros, &cache).unwrap_or_else(|e| {
+            tracing::warn!(reason = %e, "preview proxy unavailable; serving the original file");
+            canonical.clone()
+        });
     let mut current = state
         .current
         .lock()
@@ -227,7 +284,7 @@ pub async fn load_input(
     replace_current(
         &mut current,
         CurrentMedia {
-            input: canonical,
+            preview: preview_file,
             cache,
             thumbnails: files.into_iter().map(PathBuf::from).collect(),
         },
@@ -295,22 +352,114 @@ mod tests {
         fs::write(old_cache.join("frame.jpg"), b"x").unwrap();
         let input = dir.path().join("new.mp4");
         let mut current = Some(CurrentMedia {
-            input: dir.path().join("old.mp4"),
+            preview: dir.path().join("old.mp4"),
             cache: old_cache.clone(),
             thumbnails: vec![],
         });
         replace_current(
             &mut current,
             CurrentMedia {
-                input: input.clone(),
+                preview: input.clone(),
                 cache: dir.path().join("new-cache"),
                 thumbnails: vec![],
             },
         );
         assert!(!old_cache.exists());
-        assert_eq!(current.as_ref().unwrap().input, input);
+        assert_eq!(current.as_ref().unwrap().preview, input);
         cleanup(&MediaState {
             current: Mutex::new(current),
         });
+    }
+    fn atom_order(path: &Path) -> Vec<String> {
+        let bytes = fs::read(path).unwrap();
+        let mut atoms = vec![];
+        let mut pos = 0usize;
+        while pos + 8 <= bytes.len() {
+            let len = u32::from_be_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
+            atoms.push(String::from_utf8_lossy(&bytes[pos + 4..pos + 8]).into_owned());
+            if len < 8 {
+                break;
+            }
+            pos += len;
+        }
+        atoms
+    }
+    fn keyframe_times(path: &Path) -> Vec<f64> {
+        let out = Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v",
+                "-skip_frame",
+                "nokey",
+                "-show_entries",
+                "frame=pts_time",
+                "-of",
+                "csv",
+            ])
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| line.split(',').nth(1)?.parse::<f64>().ok())
+            .collect()
+    }
+    #[test]
+    fn preview_proxy_moves_moov_forward_and_densifies_keyframes() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("sparse.mp4");
+        let status = Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=s=320x240:r=30:d=4",
+                "-an",
+                "-c:v",
+                "libx264",
+                "-g",
+                "120",
+                "-keyint_min",
+                "120",
+                "-sc_threshold",
+                "0",
+                "-pix_fmt",
+                "yuv420p",
+                "-y",
+            ])
+            .arg(&source)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let source_atoms = atom_order(&source);
+        assert!(
+            source_atoms.iter().position(|a| a == "mdat")
+                < source_atoms.iter().position(|a| a == "moov")
+        );
+        assert!(keyframe_times(&source).len() <= 2);
+        let proxy = preview_proxy(&source, 4_000_000, &dir.path().join("cache")).unwrap();
+        let atoms = atom_order(&proxy);
+        let moov = atoms.iter().position(|a| a == "moov").expect("moov atom");
+        let mdat = atoms.iter().position(|a| a == "mdat").expect("mdat atom");
+        assert!(moov < mdat);
+        let dense = keyframe_times(&proxy);
+        assert!(dense.len() >= 3);
+        assert!(dense.windows(2).all(|pair| pair[1] - pair[0] <= 1.5));
+        let metadata = probe(&proxy).unwrap();
+        assert_eq!(metadata.codec, "h264");
+        assert!((metadata.duration_micros as i64 - 4_000_000).abs() <= 150_000);
+    }
+    #[test]
+    fn preview_proxy_rejects_unusable_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad = dir.path().join("bad.mp4");
+        fs::write(&bad, b"not media").unwrap();
+        assert!(preview_proxy(&bad, 1_000_000, &dir.path().join("cache")).is_err());
     }
 }

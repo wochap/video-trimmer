@@ -6,20 +6,20 @@ use tokio::{
     net::{TcpListener, TcpStream},
 };
 pub trait MediaResolver: Send + Sync {
-    fn input(&self) -> Option<PathBuf>;
+    fn media(&self) -> Option<PathBuf>;
     fn thumbnail(&self, index: usize) -> Option<PathBuf>;
 }
 struct StateResolver {
     app: tauri::AppHandle,
 }
 impl MediaResolver for StateResolver {
-    fn input(&self) -> Option<PathBuf> {
+    fn media(&self) -> Option<PathBuf> {
         self.app
             .state::<MediaState>()
             .current
             .lock()
             .ok()
-            .and_then(|guard| guard.as_ref().map(|media| media.input.clone()))
+            .and_then(|guard| guard.as_ref().map(|media| media.preview.clone()))
     }
     fn thumbnail(&self, index: usize) -> Option<PathBuf> {
         self.app
@@ -141,7 +141,7 @@ async fn handle_connection(
         return write_error(&mut stream, 405, "Method Not Allowed").await;
     }
     let path = if head.target == "/media" {
-        resolver.input()
+        resolver.media()
     } else if let Some(index) = head
         .target
         .strip_prefix("/thumb/")
@@ -270,24 +270,24 @@ mod tests {
     use super::*;
     use tokio::net::TcpStream as TokioStream;
     struct Fixed {
-        input: Option<PathBuf>,
+        media: Option<PathBuf>,
         thumbnails: Vec<PathBuf>,
     }
     impl MediaResolver for Fixed {
-        fn input(&self) -> Option<PathBuf> {
-            self.input.clone()
+        fn media(&self) -> Option<PathBuf> {
+            self.media.clone()
         }
         fn thumbnail(&self, index: usize) -> Option<PathBuf> {
             self.thumbnails.get(index).cloned()
         }
     }
     async fn start_server(
-        input: Option<PathBuf>,
+        media: Option<PathBuf>,
         thumbnails: Vec<PathBuf>,
     ) -> std::net::SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let resolver: Arc<dyn MediaResolver> = Arc::new(Fixed { input, thumbnails });
+        let resolver: Arc<dyn MediaResolver> = Arc::new(Fixed { media, thumbnails });
         tokio::spawn(serve(listener, resolver));
         addr
     }

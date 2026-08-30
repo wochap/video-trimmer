@@ -43,7 +43,7 @@ The system MUST use ffprobe to validate that the selected local file is a readab
 - **THEN** the system displays a concise error and allows the user to choose another file
 
 ### Requirement: Secure local preview
-The system SHALL preview only the currently selected file through a loopback HTTP endpoint managed by the application, bound to `127.0.0.1` on an ephemeral port, and SHALL authorize only that individual file and its generated thumbnails for serving. The endpoint MUST NOT accept filesystem paths in request URLs and MUST NOT grant the webview blanket access to the user's home directory. Generated thumbnails MAY continue to use the Tauri asset protocol.
+The system SHALL preview the currently selected file through a loopback HTTP endpoint managed by the application, bound to `127.0.0.1` on an ephemeral port, and SHALL authorize only that file's generated preview proxy (or the file itself when proxy generation fails) and its generated thumbnails for serving. The endpoint MUST NOT accept filesystem paths in request URLs and MUST NOT grant the webview blanket access to the user's home directory. Generated thumbnails MAY continue to use the Tauri asset protocol.
 
 #### Scenario: Preview a selected file
 - **WHEN** a valid file finishes probing
@@ -53,8 +53,19 @@ The system SHALL preview only the currently selected file through a loopback HTT
 - **WHEN** the user successfully opens or drops a different valid file
 - **THEN** the system revokes or stops using the previous preview and displays the new file
 
+### Requirement: Seek-friendly preview proxy
+The system SHALL derive a preview proxy from the selected MP4 by re-encoding it with dense keyframes, a leading moov atom, and fresh timing metadata, and SHALL serve that proxy at the loopback media endpoint. The proxy SHALL preserve the source timestamps so that trim positions chosen against the preview remain valid, and export SHALL continue to read the original file.
+
+#### Scenario: Proxy generation succeeds
+- **WHEN** a valid MP4 finishes probing and FFmpeg builds the proxy
+- **THEN** the system plays the proxy in place of the raw file so that seeking lands on a nearby keyframe without flushing the displayed frame
+
+#### Scenario: Proxy generation fails
+- **WHEN** FFmpeg cannot build the proxy for a probed MP4
+- **THEN** the system serves the original file at the preview endpoint and records the degraded state
+
 ### Requirement: Loopback media streaming
-The loopback preview endpoint SHALL support HTTP Range requests so that playback can start and seek without buffering the entire file, and SHALL serve nothing other than the currently loaded media and its thumbnails.
+The loopback preview endpoint SHALL support HTTP Range requests so that playback can start and seek without buffering the entire file, and SHALL serve nothing other than the currently loaded media's preview proxy (or the file itself when proxy generation fails) and its thumbnails.
 
 #### Scenario: Full request
 - **WHEN** a client requests the media endpoint without a Range header while a file is loaded
