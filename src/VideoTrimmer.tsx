@@ -276,7 +276,6 @@ export default function VideoTrimmer() {
                 src={video.previewUrl}
                 controls
                 className="max-h-full max-w-full"
-                onClick={toggle}
                 onLoadedMetadata={() => setPreviewOk(true)}
                 onError={() => {
                   setPreviewOk(false);
