@@ -1,46 +1,84 @@
 # video-trimmer
 
-A minimal, Wayland-only MP4 trimmer for Hyprland. It previews one clip, provides a QuickTime-like in/out timeline, and precisely re-encodes the chosen interval instead of cutting only at keyframes.
+A minimal Wayland-only MP4 trimmer for Hyprland. Select an in/out range, preview it, and export a precise H.264 cut with optional VA-API acceleration.
 
-## Run
+## Features
+
+- QuickTime-style timeline with mouse and keyboard controls
+- Precise cuts through re-encoding instead of keyframe-only splitting
+- Hardware-accelerated export with an automatic software fallback
+- File picker, drag and drop, and command-line input/output paths
+
+## Install
+
+Requires an x86_64 Linux system running native Wayland and [Nix](https://nixos.org/) with flakes enabled.
 
 ```sh
-nix develop
-bun install --frozen-lockfile
-bun tauri dev -- [INPUT] [-o PATH] [-f] [-v]
+nix profile install github:wochap/video-trimmer
 ```
 
-`INPUT` is optional. `-o/--output` bypasses the save picker, `-f/--force` authorizes replacing an existing destination, and `-v/--verbose` retains detailed media logs. The process requires a reachable native Wayland display and deliberately refuses X11/XWayland fallback.
-
-On success stdout contains exactly one canonical absolute output path. Diagnostics go to stderr and `$XDG_STATE_HOME/video-trimmer` (normally `~/.local/state/video-trimmer`). Cancellation exits with status 130 and prints no stdout path. Startup/validation/export failures are nonzero and also leave stdout empty.
-
-## Controls
-
-- Click the video or its visible play button: play/pause
-- Click or drag the timeline: seek
-- Drag or focus either labelled handle: change in/out
-- `Space`: play/pause
-- `Left` / `Right`: seek one source frame
-- `Shift+Left` / `Shift+Right`: seek one second
-- `I` / `O`: set in/out at the playhead
-- `Enter`: trim; `Escape`: cancel; `Ctrl+O`: open another MP4
-
-## Export and acceleration
-
-Exports are H.264 with optional AAC audio, begin at timestamp zero, and use a temporary file beside the destination. Existing output is preserved on failure or cancellation. Attempts run in this order: VA-API decode/encode, software decode with VA-API encode, then software decode/libx264. The badge reports playback decode/render and export decode/encode independently; `unknown` means WebKitGTK did not provide enough evidence, not that hardware is inactive.
-
-Runtime dependencies are GTK3, WebKitGTK 4.1 with GStreamer codecs, FFmpeg/ffprobe, and optionally an accessible `/dev/dri/renderD*` node. The Nix flake supplies these and wraps the program with `GDK_BACKEND=wayland`.
-
-Only local MP4 input and one temporal range are supported. There is no X11 mode, stream-copy mode, spatial crop, joining, multiple ranges, batch/headless mode, or cross-platform package. See [docs/verification.md](docs/verification.md) for fixture coverage and accepted conversion limitations.
-
-## Checks
+Run without installing:
 
 ```sh
-bun run build
-bun run test
-cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+nix run github:wochap/video-trimmer -- video.mp4
+```
+
+## Usage
+
+```sh
+video-trimmer [INPUT] [-o PATH] [-f] [-v]
+```
+
+```sh
+video-trimmer recording.mp4
+video-trimmer recording.mp4 -o clip.mp4
+video-trimmer recording.mp4 -o clip.mp4 --force
+```
+
+`--force` allows an existing output file to be replaced. `--verbose` enables detailed media logs.
+
+Useful controls:
+
+- `Space` — play or pause
+- `Left` / `Right` — seek one frame
+- `Shift+Left` / `Shift+Right` — seek one second
+- `I` / `O` — set the in/out point
+- `Enter` — export
+- `Escape` — cancel
+- `Ctrl+O` — open another MP4
+
+## Development
+
+```sh
+git clone https://github.com/wochap/video-trimmer.git
+cd video-trimmer
+nix develop
+npm ci
+npm run tauri -- dev -- [INPUT]
+```
+
+Run the main checks with:
+
+```sh
+npm run build
+npm test
 cargo test --manifest-path src-tauri/Cargo.toml
-openspec validate build-video-trimmer --strict
 nix build
 ```
+
+## Tech stack
+
+- [Tauri 2](https://tauri.app/) and Rust
+- React, TypeScript, Vite, and Tailwind CSS
+- FFmpeg/ffprobe, GTK3, WebKitGTK, and GStreamer
+- Nix for development and packaging
+
+## Notes
+
+Only local MP4 files and one continuous time range are supported. Exports use H.264 with optional AAC audio and may normalize unusual formats for compatibility. The app requires native Wayland and does not fall back to X11/XWayland.
+
+On success, stdout contains only the absolute output path. Logs are written to stderr and `$XDG_STATE_HOME/video-trimmer` (usually `~/.local/state/video-trimmer`). See [docs/verification.md](docs/verification.md) for supported media scenarios.
+
+## License
+
+[MIT](LICENSE)
