@@ -18,18 +18,10 @@ pub struct MediaState {
 pub struct CurrentMedia {
     pub input: PathBuf,
     pub cache: PathBuf,
+    pub thumbnails: Vec<PathBuf>,
 }
-fn authorized_paths(input: &Path, thumbnails: &[String]) -> Vec<PathBuf> {
-    std::iter::once(input.to_path_buf())
-        .chain(thumbnails.iter().map(PathBuf::from))
-        .collect()
-}
-fn replace_current<F>(current: &mut Option<CurrentMedia>, next: CurrentMedia, mut forbid: F)
-where
-    F: FnMut(&Path),
-{
+fn replace_current(current: &mut Option<CurrentMedia>, next: CurrentMedia) {
     if let Some(old) = current.take() {
-        forbid(&old.input);
         let _ = fs::remove_dir_all(old.cache);
     }
     *current = Some(next);
@@ -38,6 +30,7 @@ where
 #[serde(rename_all = "camelCase")]
 pub struct VideoMetadata {
     pub path: String,
+    pub preview_url: String,
     pub duration_micros: u64,
     pub width: u32,
     pub height: u32,
@@ -143,6 +136,7 @@ pub fn probe(path: &Path) -> Result<VideoMetadata, AppError> {
     let rate = parse_rate(v.avg_frame_rate.as_deref().or(v.r_frame_rate.as_deref()));
     Ok(VideoMetadata {
         path: path.to_string_lossy().into_owned(),
+        preview_url: String::new(),
         duration_micros: (duration * 1_000_000.0).round() as u64,
         width: v.width.unwrap_or(0),
         height: v.height.unwrap_or(0),
@@ -200,6 +194,7 @@ fn thumbnails(path: &Path, duration: u64) -> Result<(PathBuf, Vec<String>), Stri
 pub async fn load_input(
     app: tauri::AppHandle,
     state: tauri::State<'_, MediaState>,
+    preview: tauri::State<'_, crate::preview_server::PreviewServer>,
     path: String,
 ) -> Result<VideoMetadata, AppError> {
     let canonical = validate_input(Path::new(&path))?;
@@ -218,8 +213,9 @@ pub async fn load_input(
             (fallback, vec![])
         }
     };
-    metadata.thumbnails = files;
-    for path in authorized_paths(&canonical, &metadata.thumbnails) {
+    metadata.thumbnails = files.clone();
+    metadata.preview_url = preview.media_url().to_owned();
+    for path in &files {
         app.asset_protocol_scope()
             .allow_file(path)
             .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -233,9 +229,7 @@ pub async fn load_input(
         CurrentMedia {
             input: canonical,
             cache,
-        },
-        |old| {
-            let _ = app.asset_protocol_scope().forbid_file(old);
+            thumbnails: files.into_iter().map(PathBuf::from).collect(),
         },
     );
     Ok(metadata)
@@ -294,32 +288,25 @@ mod tests {
         assert!(matches!(probe(&malformed), Err(AppError::Probe(_))));
     }
     #[test]
-    fn authorization_is_per_file_and_replacement_cleans_cache() {
+    fn replacement_cleans_previous_cache() {
         let dir = tempfile::tempdir().unwrap();
         let old_cache = dir.path().join("old-cache");
         fs::create_dir(&old_cache).unwrap();
         fs::write(old_cache.join("frame.jpg"), b"x").unwrap();
         let input = dir.path().join("new.mp4");
-        let thumb = dir.path().join("frame.jpg").display().to_string();
-        let authorized = authorized_paths(&input, std::slice::from_ref(&thumb));
-        assert_eq!(authorized, vec![input.clone(), PathBuf::from(thumb)]);
-        assert!(!authorized
-            .iter()
-            .any(|p| p == Path::new("/") || p.ends_with("home")));
         let mut current = Some(CurrentMedia {
             input: dir.path().join("old.mp4"),
             cache: old_cache.clone(),
+            thumbnails: vec![],
         });
-        let mut revoked = vec![];
         replace_current(
             &mut current,
             CurrentMedia {
                 input: input.clone(),
                 cache: dir.path().join("new-cache"),
+                thumbnails: vec![],
             },
-            |p| revoked.push(p.to_path_buf()),
         );
-        assert_eq!(revoked, vec![dir.path().join("old.mp4")]);
         assert!(!old_cache.exists());
         assert_eq!(current.as_ref().unwrap().input, input);
         cleanup(&MediaState {

@@ -6,6 +6,7 @@ mod export;
 mod lifecycle;
 mod logging;
 mod media;
+mod preview_server;
 use clap::Parser;
 use std::{os::unix::net::UnixStream, path::PathBuf, sync::Mutex};
 use tauri::{Manager, RunEvent};
@@ -62,6 +63,15 @@ pub fn run() {
         .manage(export::ExportState::default())
         .manage(log_paths)
         .manage(app::LogGuard { _guard: guard })
+        .setup(|app| {
+            let server =
+                preview_server::PreviewServer::start(app.handle().clone()).unwrap_or_else(|e| {
+                    eprintln!("video-trimmer: preview server failed to start: {e}");
+                    std::process::exit(lifecycle::EXIT_STARTUP)
+                });
+            app.manage(server);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             app::take_launch_options,
             app::exit_application,
@@ -77,6 +87,7 @@ pub fn run() {
         });
     app.run(|handle, event| {
         if matches!(event, RunEvent::ExitRequested { .. }) {
+            handle.state::<preview_server::PreviewServer>().stop();
             media::cleanup(handle.state::<media::MediaState>().inner())
         }
     })
