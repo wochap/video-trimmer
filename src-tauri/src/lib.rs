@@ -1,14 +1,96 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
+mod acceleration;
+mod app;
+mod cli;
+mod error;
+mod export;
+mod lifecycle;
+mod logging;
+mod media;
+use clap::Parser;
+use std::{os::unix::net::UnixStream, path::PathBuf, sync::Mutex};
+use tauri::{Manager, RunEvent};
+fn validate_wayland() -> Result<String, String> {
+    std::env::set_var("GDK_BACKEND", "wayland");
+    let display = std::env::var("WAYLAND_DISPLAY").map_err(|_| {
+        "WAYLAND_DISPLAY is not set; video-trimmer requires a native Wayland session".to_string()
+    })?;
+    let socket =
+        if PathBuf::from(&display).is_absolute() {
+            PathBuf::from(&display)
+        } else {
+            PathBuf::from(std::env::var("XDG_RUNTIME_DIR").map_err(|_| {
+                "XDG_RUNTIME_DIR is not set; cannot locate Wayland display".to_string()
+            })?)
+            .join(&display)
+        };
+    UnixStream::connect(&socket)
+        .map_err(|e| format!("Wayland display {} is unavailable: {e}", socket.display()))?;
+    Ok(display)
 }
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+    let cli = cli::Cli::parse();
+    let wayland_name = match validate_wayland() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("video-trimmer: {e}");
+            std::process::exit(lifecycle::EXIT_STARTUP)
+        }
+    };
+    let (log_paths, guard) = match logging::init(cli.verbose) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("video-trimmer: logging initialization failed: {e}");
+            std::process::exit(lifecycle::EXIT_STARTUP)
+        }
+    };
+    let state_dir = log_paths.state_dir.display().to_string();
+    let application_log = log_paths.application.display().to_string();
+    let gstreamer_log = log_paths.gstreamer.display().to_string();
+    tracing::info!(
+        wayland_display = %wayland_name,
+        state_dir = %state_dir,
+        application_log = %application_log,
+        gstreamer_log = %gstreamer_log,
+        "starting native Wayland application"
+    );
+    let launch = cli::LaunchOptions::from(cli);
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .manage(app::LaunchState(Mutex::new(Some(launch))))
+        .manage(media::MediaState::default())
+        .manage(export::ExportState::default())
+        .manage(log_paths)
+        .manage(app::LogGuard { _guard: guard })
+        .invoke_handler(tauri::generate_handler![
+            app::take_launch_options,
+            app::exit_application,
+            media::load_input,
+            export::start_export,
+            export::cancel_export,
+            acceleration::playback_acceleration
+        ])
+        .build(tauri::generate_context!())
+        .unwrap_or_else(|e| {
+            eprintln!("video-trimmer: application initialization failed: {e}");
+            std::process::exit(lifecycle::EXIT_STARTUP)
+        });
+    app.run(|handle, event| {
+        if matches!(event, RunEvent::ExitRequested { .. }) {
+            media::cleanup(handle.state::<media::MediaState>().inner())
+        }
+    })
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn missing_wayland_is_rejected() {
+        let old = std::env::var_os("WAYLAND_DISPLAY");
+        std::env::remove_var("WAYLAND_DISPLAY");
+        assert!(validate_wayland().is_err());
+        if let Some(v) = old {
+            std::env::set_var("WAYLAND_DISPLAY", v)
+        }
+    }
 }

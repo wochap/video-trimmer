@@ -1,0 +1,3 @@
+import { invoke,convertFileSrc } from "@tauri-apps/api/core";
+import type { ExportRequest,ExportResult,LaunchOptions,VideoMetadata } from "./types";
+export const backend={launchOptions:()=>invoke<LaunchOptions>("take_launch_options"),loadInput:async(path:string)=>{const m=await invoke<Omit<VideoMetadata,"previewUrl">>("load_input",{path});return {...m,previewUrl:convertFileSrc(m.path),thumbnails:m.thumbnails.map(path=>convertFileSrc(path))};},playbackAcceleration:()=>invoke<import("./types").AccelerationRecord[]>("playback_acceleration"),exportVideo:(request:ExportRequest)=>invoke<ExportResult>("start_export",{request}),cancelExport:()=>invoke<void>("cancel_export"),exit:(code:number)=>invoke<void>("exit_application",{code})};

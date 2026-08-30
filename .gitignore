@@ -28,3 +28,6 @@ dist-ssr
 .vscode
 openspec/changes/archive
 ~
+
+AGENTS.md
+RTK.md
