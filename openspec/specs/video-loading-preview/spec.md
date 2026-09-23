@@ -6,19 +6,23 @@ Define secure MP4 selection, validation, preview, and degraded thumbnail behavio
 ## Requirements
 
 ### Requirement: Empty-state video selection
-The system SHALL present the undecorated window as a clear file-selection target when no video is loaded and SHALL allow a user to invoke an MP4 file picker using either mouse or keyboard.
+The system SHALL present the undecorated window as a clear file-selection target when no video is loaded, with a `Choose video…` action in the drop target and an `Open…` action in the header, and SHALL allow a user to invoke an MP4 file picker using either mouse or keyboard. Once a video is loaded the header action reads `Replace` and opens the same picker.
 
 #### Scenario: Select with the mouse
-- **WHEN** the user clicks the empty-state selection target and chooses a valid MP4
+- **WHEN** the user clicks `Choose video…` or `Open…` and chooses a valid MP4
 - **THEN** the system loads that file for inspection and preview
 
 #### Scenario: Select with the keyboard
-- **WHEN** the user focuses and activates the empty-state selection target or presses `Ctrl+O`
+- **WHEN** the user focuses and activates the empty-state selection target, presses `Enter` in the empty state, or presses `Ctrl+O`
 - **THEN** the system opens a keyboard-operable MP4 file picker
 
 #### Scenario: Cancel selection
 - **WHEN** the user cancels the file picker
 - **THEN** the system remains in the empty state without reporting an error
+
+#### Scenario: Replace a loaded video
+- **WHEN** the user activates `Replace` and chooses another valid MP4
+- **THEN** the system loads the new file, resets the selection to its full duration, and derives a new default output name
 
 ### Requirement: Native file drag and drop
 The system SHALL accept exactly one local MP4 path delivered by Tauri's native drag-and-drop event and SHALL provide visible feedback while an acceptable file is over the window.

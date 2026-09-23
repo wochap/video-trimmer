@@ -6,11 +6,11 @@ Define the editor workspace, precise range selection, accessibility, and cancell
 ## Requirements
 
 ### Requirement: QuickTime-like trim workspace
-The system SHALL display the video prominently above a compact thumbnail timeline containing a playhead, start handle, end handle, current selection, time labels, and only the actions needed to cancel or trim.
+The system SHALL display the video prominently above a transport bar and a compact thumbnail timeline containing a ruler, a playhead, start handle, end handle, current selection, and time labels, with a settings sidebar holding the selection fields, output options, `Cancel`, and `Trim & save`.
 
 #### Scenario: Editor becomes ready
 - **WHEN** a video's metadata, preview, and initial timeline are available
-- **THEN** the trim range spans the full video and the workspace shows the video, timeline, `Cancel`, and `Trim`
+- **THEN** the trim range spans the full video and the workspace shows the video, transport, timeline, sidebar, `Cancel`, and `Trim & save`
 
 ### Requirement: Complete mouse operation
 The system SHALL allow playback, seeking, range selection, cancellation, and export initiation using only a pointing device.
@@ -28,7 +28,7 @@ The system SHALL allow playback, seeking, range selection, cancellation, and exp
 - **THEN** the preview toggles between playing and paused
 
 ### Requirement: Complete keyboard operation
-The system SHALL allow every trimming workflow action using the keyboard and SHALL avoid overriding keystrokes used by a focused native dialog or text-like control.
+The system SHALL allow every trimming workflow action using the keyboard, SHALL avoid overriding keystrokes used by a focused native dialog or text-like control, and SHALL display the active shortcuts as hint chips in the transport bar.
 
 #### Scenario: Playback and seek shortcuts
 - **WHEN** the editor has focus and the user presses `Space`, `Left`, `Right`, `Shift+Left`, or `Shift+Right`
@@ -45,6 +45,10 @@ The system SHALL allow every trimming workflow action using the keyboard and SHA
 #### Scenario: Invoke primary actions
 - **WHEN** the editor has focus and the user presses `Enter`, `Escape`, or `Ctrl+O`
 - **THEN** the system respectively initiates a valid trim, requests cancellation/exit, or opens the input picker
+
+#### Scenario: Hint chips
+- **WHEN** the editor is ready
+- **THEN** the transport bar lists `Space`, `←`/`→`, `Shift`, `I`/`O`, and `Enter` with their actions
 
 ### Requirement: Accessible timeline semantics
 The system MUST expose the trim boundaries as independently focusable, labelled slider controls and SHALL announce changing times, validation errors, export progress, and completion through accessible status semantics.
@@ -91,28 +95,54 @@ The system SHALL seek the video preview and visible playhead to the resulting ti
 - **THEN** the preview seeks to the clamped boundary timestamp rather than the unvalidated requested timestamp
 
 ### Requirement: Selection preview playback controls
-The system SHALL provide keyboard- and pointer-operable controls named `Preview start`, `Play selection`, and `Preview end`, and each control SHALL play only its defined interval of the current trim selection before pausing with the preview and playhead at the interval end.
+The system SHALL provide keyboard- and pointer-operable transport controls named `Go to in`, `Previous frame`, `Play`, `Next frame`, `Go to out`, and `Play selection`. `Play selection` SHALL play only the current trim selection before pausing with the preview and playhead at the selection end.
 
 #### Scenario: Preview the selection start
-- **WHEN** the user activates `Preview start` for a selection at least two seconds long
-- **THEN** playback starts at the selection start and pauses two seconds later
+- **WHEN** the user activates `Go to in`
+- **THEN** the playhead and preview seek to the selection start without moving a boundary
 
 #### Scenario: Play the full selection
 - **WHEN** the user activates `Play selection`
 - **THEN** playback starts at the selection start and pauses at the selection end
 
 #### Scenario: Preview the selection end
-- **WHEN** the user activates `Preview end` for a selection at least two seconds long
-- **THEN** playback starts two seconds before the selection end and pauses at the selection end
+- **WHEN** the user activates `Go to out`
+- **THEN** the playhead and preview seek to the selection end without moving a boundary
+
+#### Scenario: Step one frame
+- **WHEN** the user activates `Previous frame` or `Next frame`
+- **THEN** the playhead moves by one probed frame in that direction
 
 #### Scenario: Preview a short selection edge
-- **WHEN** the user activates `Preview start` or `Preview end` for a selection shorter than two seconds
+- **WHEN** the user activates `Play selection` for a selection shorter than two seconds
 - **THEN** playback covers the full selection without seeking outside its boundaries and pauses at the selection end
 
 #### Scenario: Replace an active bounded preview
-- **WHEN** the user activates a selection preview control while another bounded preview is active
-- **THEN** the newly requested interval replaces the prior interval and determines the next automatic stop
+- **WHEN** the user activates `Play selection`, `Go to in`, or `Go to out` while a bounded preview is active
+- **THEN** the prior bounded interval is discarded and the new request determines playback and the next automatic stop
 
 #### Scenario: Preview is unavailable
 - **WHEN** no playable video is ready or an export is in progress
-- **THEN** all three selection preview controls are disabled
+- **THEN** all transport controls are disabled
+
+### Requirement: Editable boundary fields
+The sidebar SHALL provide `In` and `Out` text fields showing the boundaries in `m:ss.mmm` form. A field SHALL commit on `Enter` or blur, accept `m:ss.mmm`, `ss.mmm`, and whole seconds, clamp the result to a valid frame-aligned selection, and revert on invalid input or `Escape`.
+
+#### Scenario: Commit a typed in-point
+- **WHEN** the user types `0:44.185` in `In` and presses `Enter`
+- **THEN** the start boundary becomes the nearest frame-aligned time at or before the end minus one frame and the preview seeks there
+
+#### Scenario: Invalid text
+- **WHEN** the user types `abc` in `Out` and blurs the field
+- **THEN** the field reverts to the current end boundary and no boundary changes
+
+#### Scenario: Keys inside a field
+- **WHEN** a boundary field has focus and the user presses `Enter`, `Space`, `I`, or `O`
+- **THEN** the key edits or commits the field and does not trigger the editor shortcuts
+
+### Requirement: Selection summary
+The sidebar SHALL show the selection duration, its frame count derived from the probed frame rate, and its percentage of the clip.
+
+#### Scenario: Selection changes
+- **WHEN** either boundary moves
+- **THEN** the duration, frame count, and percentage update immediately

@@ -17,7 +17,7 @@ The system SHALL track playback decoding, playback rendering, export decoding, a
 - **THEN** the system records the actual decoder, encoder, API, DRM render node, and hardware/software classification for that attempt
 
 ### Requirement: Visible acceleration status
-The system SHALL show a compact, non-blocking acceleration indicator in the editor and SHALL provide details for playback and export through accessible text or a tooltip.
+The system SHALL show a compact, non-blocking acceleration indicator in the editor header as a status dot followed by text (`Hardware acceleration active`, `Software encoding`, or `Hardware acceleration unknown`) and SHALL provide details for playback and export through accessible text or a tooltip.
 
 #### Scenario: Hardware playback is detected
 - **WHEN** the active GStreamer pipeline selects a recognized hardware decoder or DMA-BUF rendering path
