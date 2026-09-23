@@ -92,3 +92,26 @@ The editor SHALL use the Nocturne token set (background, surface, text, accent r
 #### Scenario: Offline launch
 - **WHEN** the application starts without network access
 - **THEN** the interface renders in Inter with no fallback font substitution
+
+### Requirement: Token-colored outlines
+Every border that the editor gives a token color (accent, danger, or a neutral step) SHALL render in that exact token color, not in the default divider color. The selected option of a segmented control SHALL show a complete accent outline that follows the control's rounded outer corners.
+
+#### Scenario: Timeline selection frame
+- **WHEN** a video is loaded and a trim range is selected
+- **THEN** the frame around the selected range renders as a solid accent-colored border with its accent glow
+
+#### Scenario: Outline and danger buttons
+- **WHEN** an outline or danger button is visible
+- **THEN** its border renders in the accent or danger color respectively
+
+#### Scenario: Focused text field
+- **WHEN** a text field has keyboard focus
+- **THEN** its border renders in the accent color
+
+#### Scenario: Selected first or last segment
+- **WHEN** the first or last option of the Format or Quality control is selected
+- **THEN** the accent outline is continuous along all four sides and curves with the control's rounded corners, with no clipped or missing corner segments
+
+#### Scenario: Selected middle segment
+- **WHEN** a middle option of a segmented control is selected
+- **THEN** the accent outline is continuous along all four sides of that option

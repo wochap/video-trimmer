@@ -43,7 +43,7 @@ The system SHALL emit concise structured logs by default containing the Wayland 
 - **THEN** normal logs contain a warning with the failed stage and a summary reason followed by the selected fallback
 
 ### Requirement: Verbose media diagnostics
-The system SHALL make `--verbose` retain detailed application, FFmpeg stderr, and WebKitGTK/GStreamer media diagnostics under the XDG state directory while keeping application stdout clean.
+The system SHALL make `--verbose` retain detailed application, FFmpeg stderr, and WebKitGTK/GStreamer media diagnostics under the XDG state directory while keeping application stdout clean. Without `--verbose`, the system SHALL still retain a low-volume, per-instance GStreamer trace that records which media elements the pipeline creates, so that playback decoder detection works in normal runs.
 
 #### Scenario: Verbose mode enabled
 - **WHEN** the application starts with `--verbose`
@@ -51,14 +51,22 @@ The system SHALL make `--verbose` retain detailed application, FFmpeg stderr, an
 
 #### Scenario: Verbose mode disabled
 - **WHEN** the application starts normally
-- **THEN** it writes concise application logs without retaining high-volume raw media traces
+- **THEN** it writes concise application logs and a low-volume element-creation trace, without retaining high-volume raw media traces
+
+#### Scenario: Two instances run at once
+- **WHEN** two instances of the application play different videos at the same time
+- **THEN** each instance reports the decoder selected by its own pipeline
 
 ### Requirement: Playback decoder classification
-The system SHALL classify known GStreamer hardware and software decoder factories from WebKitGTK media diagnostics and SHALL preserve the original decoder name in logs.
+The system SHALL classify known GStreamer hardware and software decoder factories from WebKitGTK media diagnostics in both normal and verbose mode, SHALL report the decoder the pipeline created most recently, and SHALL preserve the original decoder name in logs.
 
 #### Scenario: Known decoder selected
 - **WHEN** diagnostics show a recognized decoder factory such as a VA-API hardware decoder or FFmpeg software decoder
-- **THEN** the application reports the factory name and its hardware/software classification
+- **THEN** the application reports the factory name and its hardware/software classification, and the normal application log records the selection once
+
+#### Scenario: Decoder fallback during pipeline setup
+- **WHEN** the pipeline creates a hardware decoder, rejects it, and then creates a software decoder
+- **THEN** the application reports the software decoder
 
 #### Scenario: Unknown decoder selected
 - **WHEN** diagnostics expose a decoder factory that is not in the classification table

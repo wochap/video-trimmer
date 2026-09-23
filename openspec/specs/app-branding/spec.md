@@ -27,3 +27,18 @@ The system SHALL derive every icon file referenced by the Tauri configuration fr
 #### Scenario: Window and desktop entry
 - **WHEN** the application runs under Wayland
 - **THEN** the compositor shows the Clip icon for the window and the desktop entry
+
+### Requirement: Icon resolvable by application id
+The Clip icon SHALL be resolvable from the user's icon theme by the name `video-trimmer`, which matches the Wayland application id, both for the installed package and for development runs.
+
+#### Scenario: Installed package
+- **WHEN** the packaged application is installed in the user's profile and a window is open
+- **THEN** a shell or bar that looks up the icon theme by the window's application id shows the Clip icon
+
+#### Scenario: Development run
+- **WHEN** a developer runs the icon install script and then starts the application in development mode
+- **THEN** a shell or bar that looks up the icon theme by the window's application id shows the Clip icon
+
+#### Scenario: Icons regenerated
+- **WHEN** a developer regenerates the icons from the SVG and runs the icon install script again
+- **THEN** the installed development icons are replaced with the new artwork
