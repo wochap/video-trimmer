@@ -97,3 +97,14 @@ The system SHALL keep file inspection, video playback, and thumbnail generation 
 #### Scenario: WebKit cannot preview a probed MP4
 - **WHEN** FFmpeg accepts the MP4 but the WebKit/GStreamer video element cannot decode it
 - **THEN** the system explains that the file cannot be previewed and does not enable trimming
+
+### Requirement: Keyframe index
+The system SHALL collect the presentation timestamps of the video stream's keyframes during inspection without decoding frames and SHALL expose them to the editor with the probed metadata.
+
+#### Scenario: Keyframes indexed
+- **WHEN** a valid MP4 finishes probing
+- **THEN** the metadata delivered to the editor includes an ascending list of keyframe timestamps in microseconds beginning with the first keyframe
+
+#### Scenario: Indexing fails
+- **WHEN** keyframe timestamps cannot be read
+- **THEN** the editor still enters the ready state with an empty keyframe list and copy exports report the effective start only after export
