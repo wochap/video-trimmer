@@ -8,7 +8,7 @@ type Props = {
   step: number;
   thumbnails: string[];
   onSeek: (v: number) => void;
-  onRange: (s: number, e: number) => void;
+  onRange: (s: number, e: number, boundary: "start" | "end") => void;
 };
 export function Timeline({
   duration,
@@ -36,8 +36,8 @@ export function Timeline({
     e.currentTarget.setPointerCapture(e.pointerId);
     const v = at(e);
     which === "start"
-      ? onRange(Math.min(v, end - step), end)
-      : onRange(start, Math.max(v, start + step));
+      ? onRange(Math.min(v, end - step), end, which)
+      : onRange(start, Math.max(v, start + step), which);
   };
   const key = (which: "start" | "end", e: KeyboardEvent) => {
     let v = which === "start" ? start : end;
@@ -48,8 +48,8 @@ export function Timeline({
     else return;
     e.preventDefault();
     which === "start"
-      ? onRange(Math.max(0, Math.min(v, end - step)), end)
-      : onRange(start, Math.min(duration, Math.max(v, start + step)));
+      ? onRange(Math.max(0, Math.min(v, end - step)), end, which)
+      : onRange(start, Math.min(duration, Math.max(v, start + step)), which);
   };
   return (
     <div>

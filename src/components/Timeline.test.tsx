@@ -41,7 +41,7 @@ describe("Timeline", () => {
     fireEvent.keyDown(screen.getByRole("slider", { name: "Trim start" }), {
       key: "ArrowRight",
     });
-    expect(range).toHaveBeenCalledWith(140_000, 900_000);
+    expect(range).toHaveBeenCalledWith(140_000, 900_000, "start");
   });
 });
 describe("complete timeline interaction", () => {
@@ -95,10 +95,46 @@ describe("complete timeline interaction", () => {
     fireEvent.keyDown(screen.getByRole("slider", { name: "Trim start" }), {
       key: "End",
     });
-    expect(range).toHaveBeenCalledWith(860_000, 900_000);
+    expect(range).toHaveBeenCalledWith(860_000, 900_000, "start");
     fireEvent.keyDown(screen.getByRole("slider", { name: "Trim end" }), {
       key: "Home",
     });
-    expect(range).toHaveBeenCalledWith(100_000, 140_000);
+    expect(range).toHaveBeenCalledWith(100_000, 140_000, "end");
+  });
+
+  it("reports the active boundary for pointer adjustments", () => {
+    const range = vi.fn();
+    render(
+      <Timeline
+        duration={1_000_000}
+        start={100_000}
+        end={900_000}
+        playhead={500_000}
+        step={40_000}
+        thumbnails={[]}
+        onSeek={() => {}}
+        onRange={range}
+      />,
+    );
+    const startHandle = screen.getByRole("slider", { name: "Trim start" });
+    const track = startHandle.parentElement!;
+    vi.spyOn(track, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      width: 100,
+      right: 100,
+      top: 0,
+      bottom: 80,
+      height: 80,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    fireEvent.pointerDown(startHandle, { clientX: 25, pointerId: 1 });
+    expect(range).toHaveBeenLastCalledWith(250_000, 900_000, "start");
+    fireEvent.pointerDown(screen.getByRole("slider", { name: "Trim end" }), {
+      clientX: 75,
+      pointerId: 2,
+    });
+    expect(range).toHaveBeenLastCalledWith(100_000, 750_000, "end");
   });
 });

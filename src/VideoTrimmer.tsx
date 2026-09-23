@@ -53,7 +53,10 @@ export default function VideoTrimmer() {
     [acceleration, setAcceleration] = useState<AccelerationRecord[]>([]);
   const player = useRef<HTMLVideoElement>(null),
     cancelRequested = useRef(false),
-    launchRequested = useRef(false);
+    launchRequested = useRef(false),
+    boundedStop = useRef<number | null>(null),
+    boundedVersion = useRef(0),
+    boundedSeekTarget = useRef<number | null>(null);
   const step = frameStepMicros(video?.frameRate ?? 30);
   const load = useCallback(
     async (path: string) => {
@@ -63,6 +66,9 @@ export default function VideoTrimmer() {
         setPhase(video ? "ready" : "error");
         return;
       }
+      boundedStop.current = null;
+      boundedSeekTarget.current = null;
+      boundedVersion.current += 1;
       setPhase("loading");
       setError("");
       try {
@@ -150,20 +156,63 @@ export default function VideoTrimmer() {
     return () => window.clearInterval(id);
   }, [previewOk]);
   const seek = (v: number) => {
+    boundedStop.current = null;
+    boundedSeekTarget.current = null;
+    boundedVersion.current += 1;
     const n = Math.max(0, Math.min(v, video?.durationMicros ?? 0));
     setPlayhead(n);
     if (player.current) player.current.currentTime = microsToSeconds(n);
   };
-  const range = (s: number, e: number) => {
+  const range = (s: number, e: number, boundary?: "start" | "end") => {
     if (!video) return;
     const r = clampRange(s, e, video.durationMicros, step);
     setStart(r.start);
     setEnd(r.end);
-    seek(Math.max(r.start, Math.min(playhead, r.end)));
+    seek(
+      boundary === "start"
+        ? r.start
+        : boundary === "end"
+          ? r.end
+          : Math.max(r.start, Math.min(playhead, r.end)),
+    );
+  };
+  const playInterval = (intervalStart: number, intervalEnd: number) => {
+    const el = player.current;
+    if (!el || !video || !previewOk || phase !== "ready") return;
+    boundedStop.current = null;
+    boundedVersion.current += 1;
+    const version = boundedVersion.current;
+    boundedSeekTarget.current = intervalStart;
+    el.currentTime = microsToSeconds(intervalStart);
+    setPlayhead(intervalStart);
+    boundedStop.current = intervalEnd;
+    void el.play().catch(() => {
+      if (boundedVersion.current === version) boundedStop.current = null;
+    });
+  };
+  const stopBoundedPlayback = (el: HTMLVideoElement) => {
+    const stop = boundedStop.current;
+    if (stop === null) return false;
+    boundedStop.current = null;
+    boundedSeekTarget.current = stop;
+    boundedVersion.current += 1;
+    el.pause();
+    el.currentTime = microsToSeconds(stop);
+    setPlayhead(stop);
+    return true;
+  };
+  const syncPlaybackTime = (el: HTMLVideoElement) => {
+    const current = secondsToMicros(el.currentTime);
+    setPlayhead(current);
+    if (boundedStop.current !== null && current >= boundedStop.current)
+      stopBoundedPlayback(el);
   };
   const toggle = () => {
     const el = player.current;
     if (!el) return;
+    boundedStop.current = null;
+    boundedSeekTarget.current = null;
+    boundedVersion.current += 1;
     if (el.paused) void el.play().catch(() => {});
     else el.pause();
   };
@@ -177,6 +226,10 @@ export default function VideoTrimmer() {
       });
     if (!output) return;
     cancelRequested.current = false;
+    boundedStop.current = null;
+    boundedSeekTarget.current = null;
+    boundedVersion.current += 1;
+    player.current?.pause();
     setPhase("exporting");
     setProgress({ fraction: 0, outTimeMicros: 0, attempt: "Preparing" });
     setError("");
@@ -278,28 +331,77 @@ export default function VideoTrimmer() {
                 className="max-h-full max-w-full"
                 onLoadedMetadata={() => setPreviewOk(true)}
                 onError={() => {
+                  boundedStop.current = null;
+                  boundedSeekTarget.current = null;
+                  boundedVersion.current += 1;
                   setPreviewOk(false);
                   setError(
                     "This MP4 was inspected successfully, but WebKit/GStreamer cannot preview it.",
                   );
                 }}
-                onTimeUpdate={(e) =>
-                  setPlayhead(secondsToMicros(e.currentTarget.currentTime))
-                }
+                onTimeUpdate={(e) => syncPlaybackTime(e.currentTarget)}
+                onEnded={(e) => stopBoundedPlayback(e.currentTarget)}
+                onSeeking={(e) => {
+                  const current = secondsToMicros(e.currentTarget.currentTime);
+                  const target = boundedSeekTarget.current;
+                  if (target === null || Math.abs(current - target) > step) {
+                    boundedStop.current = null;
+                    boundedSeekTarget.current = null;
+                    boundedVersion.current += 1;
+                  }
+                }}
+                onSeeked={() => {
+                  boundedSeekTarget.current = null;
+                }}
                 onPlay={() => setPlaying(true)}
-                onPause={() => setPlaying(false)}
+                onPause={() => {
+                  setPlaying(false);
+                  boundedStop.current = null;
+                  boundedSeekTarget.current = null;
+                  boundedVersion.current += 1;
+                }}
               />
             </div>
             <div className="rounded-lg border bg-card p-4">
               <div className="mb-3 flex items-center justify-between">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label={playing ? "Pause" : "Play"}
-                  onClick={toggle}
-                >
-                  {playing ? <Pause /> : <Play />}
-                </Button>
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={playing ? "Pause" : "Play"}
+                    onClick={toggle}
+                  >
+                    {playing ? <Pause /> : <Play />}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={phase !== "ready" || !previewOk}
+                    onClick={() =>
+                      playInterval(start, Math.min(start + 2_000_000, end))
+                    }
+                  >
+                    Preview start
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={phase !== "ready" || !previewOk}
+                    onClick={() => playInterval(start, end)}
+                  >
+                    Play selection
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={phase !== "ready" || !previewOk}
+                    onClick={() =>
+                      playInterval(Math.max(start, end - 2_000_000), end)
+                    }
+                  >
+                    Preview end
+                  </Button>
+                </div>
                 <span className="text-xs text-muted-foreground">
                   {video.width}×{video.height} · {video.codec} ·{" "}
                   {video.frameRate.toFixed(3)} fps

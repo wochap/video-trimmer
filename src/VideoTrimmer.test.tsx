@@ -131,6 +131,166 @@ describe("video loading shell", () => {
   });
 });
 describe("editor workflows", () => {
+  it("seeks to the active boundary for pointer and keyboard adjustments", async () => {
+    h.open.mockResolvedValueOnce("/videos/one.mp4");
+    await ready();
+    const video = document.querySelector("video")!;
+    fireEvent.loadedMetadata(video);
+    const startHandle = screen.getByRole("slider", { name: "Trim start" });
+    const track = startHandle.parentElement!;
+    vi.spyOn(track, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      width: 100,
+      right: 100,
+      top: 0,
+      bottom: 80,
+      height: 80,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+
+    fireEvent.pointerDown(startHandle, { clientX: 25, pointerId: 1 });
+    expect(video.currentTime).toBeCloseTo(0.5);
+    expect(startHandle).toHaveAttribute("aria-valuenow", "500000");
+
+    const endHandle = screen.getByRole("slider", { name: "Trim end" });
+    fireEvent.pointerDown(endHandle, { clientX: 75, pointerId: 2 });
+    expect(video.currentTime).toBeCloseTo(1.5);
+    expect(endHandle).toHaveAttribute("aria-valuenow", "1500000");
+
+    fireEvent.keyDown(startHandle, { key: "End" });
+    expect(video.currentTime).toBeCloseTo(1.46);
+    expect(startHandle).toHaveAttribute("aria-valuenow", "1460000");
+
+    fireEvent.keyDown(endHandle, { key: "Home" });
+    expect(video.currentTime).toBeCloseTo(1.5);
+    expect(endHandle).toHaveAttribute("aria-valuenow", "1500000");
+  });
+
+  it("plays and stops each selection preview at its exact endpoint", async () => {
+    h.open.mockResolvedValueOnce("/videos/one.mp4");
+    await ready({ ...metadata(), durationMicros: 6_000_000 });
+    const video = document.querySelector("video")!;
+    fireEvent.loadedMetadata(video);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Preview start" }),
+    );
+    expect(video.currentTime).toBe(0);
+    expect(video.play).toHaveBeenCalledTimes(1);
+    video.currentTime = 2.2;
+    fireEvent.timeUpdate(video);
+    expect(video.pause).toHaveBeenCalledTimes(1);
+    expect(video.currentTime).toBe(2);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Play selection" }),
+    );
+    expect(video.currentTime).toBe(0);
+    video.currentTime = 6;
+    fireEvent.ended(video);
+    expect(video.pause).toHaveBeenCalledTimes(2);
+    expect(video.currentTime).toBe(6);
+
+    await userEvent.click(screen.getByRole("button", { name: "Preview end" }));
+    expect(video.currentTime).toBe(4);
+    video.currentTime = 6.1;
+    fireEvent.timeUpdate(video);
+    expect(video.pause).toHaveBeenCalledTimes(3);
+    expect(video.currentTime).toBe(6);
+  });
+
+  it("clips both edge previews to a selection shorter than two seconds", async () => {
+    h.open.mockResolvedValueOnce("/videos/one.mp4");
+    await ready({ ...metadata(), durationMicros: 1_500_000 });
+    const video = document.querySelector("video")!;
+    fireEvent.loadedMetadata(video);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Preview start" }),
+    );
+    expect(video.currentTime).toBe(0);
+    video.currentTime = 1.6;
+    fireEvent.timeUpdate(video);
+    expect(video.currentTime).toBe(1.5);
+
+    await userEvent.click(screen.getByRole("button", { name: "Preview end" }));
+    expect(video.currentTime).toBe(0);
+    video.currentTime = 1.6;
+    fireEvent.timeUpdate(video);
+    expect(video.currentTime).toBe(1.5);
+  });
+
+  it("replaces an active interval and clears it for unrelated seeking", async () => {
+    h.open.mockResolvedValueOnce("/videos/one.mp4");
+    await ready({ ...metadata(), durationMicros: 6_000_000 });
+    const video = document.querySelector("video")!;
+    fireEvent.loadedMetadata(video);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Preview start" }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Play selection" }),
+    );
+    video.currentTime = 2.2;
+    fireEvent.timeUpdate(video);
+    expect(video.pause).not.toHaveBeenCalled();
+    video.currentTime = 6.1;
+    fireEvent.timeUpdate(video);
+    expect(video.pause).toHaveBeenCalledTimes(1);
+    expect(video.currentTime).toBe(6);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Preview start" }),
+    );
+    video.currentTime = 1;
+    fireEvent.seeking(video);
+    video.currentTime = 2.2;
+    fireEvent.timeUpdate(video);
+    expect(video.pause).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the selection stop after dragging to a rounded preview start", async () => {
+    h.open.mockResolvedValueOnce("/videos/one.mp4");
+    await ready({ ...metadata(), durationMicros: 6_000_000 });
+    const video = document.querySelector("video")!;
+    fireEvent.loadedMetadata(video);
+    fireEvent.keyDown(screen.getByRole("slider", { name: "Trim start" }), {
+      key: "ArrowRight",
+    });
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Play selection" }),
+    );
+    video.currentTime = 0.0405;
+    fireEvent.seeking(video);
+    fireEvent.seeking(video);
+    video.currentTime = 6.1;
+    fireEvent.timeUpdate(video);
+
+    expect(video.pause).toHaveBeenCalledTimes(1);
+    expect(video.currentTime).toBe(6);
+  });
+
+  it("disables selection previews until playable and while exporting", async () => {
+    h.open.mockResolvedValueOnce("/videos/one.mp4");
+    h.save.mockResolvedValueOnce("/videos/out.mp4");
+    h.exportVideo.mockReturnValue(new Promise(() => {}));
+    await ready();
+    const controls = ["Preview start", "Play selection", "Preview end"].map(
+      (name) => screen.getByRole("button", { name }),
+    );
+    for (const control of controls) expect(control).toBeDisabled();
+
+    fireEvent.loadedMetadata(document.querySelector("video")!);
+    for (const control of controls) expect(control).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: /trim/i }));
+    await screen.findByText("Preparing · 0%");
+    for (const control of controls) expect(control).toBeDisabled();
+  });
+
   it("supports keyboard seeking, range changes, opening, and immediate cancellation", async () => {
     h.open.mockResolvedValueOnce("/videos/one.mp4");
     await ready();
