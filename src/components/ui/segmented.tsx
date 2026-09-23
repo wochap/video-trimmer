@@ -34,6 +34,8 @@ export function Segmented<T extends string>({
           key={o.value}
           className={cn(
             "relative inline-flex flex-1 cursor-pointer items-center justify-center px-3 py-[7px] text-[13px] leading-normal [&+&]:border-l [&+&]:border-divider",
+            // Inner radius (group radius minus its 1px border) so the inset ring curves with the clip.
+            "first:rounded-l-[7px] last:rounded-r-[7px]",
             "has-checked:text-accent has-checked:shadow-[inset_0_0_0_1px_var(--color-accent)]",
             "not-has-checked:hover:bg-text/7 has-focus-visible:outline-2 has-focus-visible:-outline-offset-2 has-focus-visible:outline-accent",
             disabled &&

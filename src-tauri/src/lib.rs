@@ -102,6 +102,9 @@ pub fn run() {
             handle.state::<preview_server::PreviewServer>().stop();
             media::cleanup(handle.state::<media::MediaState>().inner())
         }
+        if matches!(event, RunEvent::Exit) {
+            handle.state::<logging::LogPaths>().remove_trace()
+        }
     })
 }
 #[cfg(test)]

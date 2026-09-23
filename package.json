@@ -9,6 +9,7 @@
     "format": "prettier --write src",
     "format:check": "prettier --check src",
     "icons": "bash scripts/icons.sh",
+    "install-icon": "bash scripts/install-icon.sh",
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",

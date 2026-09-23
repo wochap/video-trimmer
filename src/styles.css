@@ -45,38 +45,40 @@
   --shadow-md: 0 0 0 1px #595d6c, 0 6px 18px rgba(0, 0, 0, 0.55);
   --shadow-lg: 0 0 0 1px #9397ab, 0 16px 40px rgba(0, 0, 0, 0.65);
 }
-* {
-  box-sizing: border-box;
-  border-color: var(--color-divider);
-}
-html,
-body,
-#root {
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  overflow: hidden;
-}
-body {
-  background: var(--color-bg);
-  color: var(--color-text);
-  font-family: var(--font-sans);
-  font-size: 15px;
-  line-height: 1.55;
-}
-:focus {
-  outline: none;
-}
-:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
-}
-::selection {
-  background: color-mix(in srgb, var(--color-accent) 30%, transparent);
-}
-button,
-input {
-  font: inherit;
+@layer base {
+  * {
+    box-sizing: border-box;
+    border-color: var(--color-divider);
+  }
+  html,
+  body,
+  #root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+  }
+  body {
+    background: var(--color-bg);
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.55;
+  }
+  :focus {
+    outline: none;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+  }
+  button,
+  input {
+    font: inherit;
+  }
 }
 .sr-only {
   position: absolute;
