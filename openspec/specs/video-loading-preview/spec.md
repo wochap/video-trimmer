@@ -69,7 +69,7 @@ The system SHALL derive a preview proxy from the selected MP4 by re-encoding it 
 - **THEN** the system serves the original file at the preview endpoint and records the degraded state
 
 ### Requirement: Loopback media streaming
-The loopback preview endpoint SHALL support HTTP Range requests so that playback can start and seek without buffering the entire file, and SHALL serve nothing other than the currently loaded media's preview proxy (or the file itself when proxy generation fails) and its thumbnails.
+The loopback preview endpoint SHALL support HTTP Range requests so that playback can start and seek without buffering the entire file, SHALL keep a client connection open for further requests unless the client asks to close it, and SHALL serve nothing other than the currently loaded media's preview proxy (or the file itself when proxy generation fails) and its thumbnails.
 
 #### Scenario: Full request
 - **WHEN** a client requests the media endpoint without a Range header while a file is loaded
@@ -90,6 +90,18 @@ The loopback preview endpoint SHALL support HTTP Range requests so that playback
 #### Scenario: Unknown endpoint
 - **WHEN** a client requests any path other than the media or thumbnail endpoints
 - **THEN** the system responds 404 and serves no content
+
+#### Scenario: Sequential requests on one connection
+- **WHEN** a client sends a second range request on the same connection after the first response completes
+- **THEN** the system answers the second request on that connection without the client reconnecting
+
+#### Scenario: Client asks to close
+- **WHEN** a request carries `Connection: close`
+- **THEN** the system sends the response with `Connection: close` and closes the connection afterwards
+
+#### Scenario: Idle connection
+- **WHEN** a kept-open connection receives no request for a bounded idle period
+- **THEN** the system closes it
 
 ### Requirement: Preview and thumbnail failure handling
 The system SHALL keep file inspection, video playback, and thumbnail generation as separately reportable operations so that a thumbnail failure does not invalidate an otherwise playable video.

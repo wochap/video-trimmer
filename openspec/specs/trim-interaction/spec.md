@@ -146,3 +146,18 @@ The sidebar SHALL show the selection duration, its frame count derived from the 
 #### Scenario: Selection changes
 - **WHEN** either boundary moves
 - **THEN** the duration, frame count, and percentage update immediately
+
+### Requirement: Coalesced scrubbing
+While the user seeks continuously (dragging on the timeline, dragging a trim handle, or holding a frame-step key), the system SHALL run at most one preview seek at a time, SHALL move the playhead indicator immediately with the input, and SHALL finish on the most recent requested position.
+
+#### Scenario: Fast drag across the timeline
+- **WHEN** the user drags across the timeline faster than the preview can seek
+- **THEN** the playhead indicator tracks the pointer without lag, intermediate positions may be skipped by the preview, and the preview ends on the position where the drag stopped
+
+#### Scenario: Drag a trim handle
+- **WHEN** the user drags a trim handle
+- **THEN** the boundary updates continuously as before, and the preview ends on the frame at the boundary's final position
+
+#### Scenario: Single seek
+- **WHEN** the user clicks once on the timeline
+- **THEN** exactly one preview seek runs, to the clicked position
