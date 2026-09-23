@@ -46,6 +46,9 @@ pub struct VideoMetadata {
     pub thumbnail_warning: Option<String>,
     pub playback_acceleration: Vec<AccelerationRecord>,
     pub keyframes_micros: Vec<u64>,
+    /// Container bitrate in bits per second, used for export size estimates.
+    #[serde(skip)]
+    pub bit_rate: Option<u64>,
 }
 #[derive(Deserialize)]
 struct Probe {
@@ -66,6 +69,7 @@ struct Stream {
 struct Format {
     duration: Option<String>,
     format_name: Option<String>,
+    bit_rate: Option<String>,
 }
 pub fn validate_input(raw: &Path) -> Result<PathBuf, AppError> {
     if raw
@@ -215,6 +219,7 @@ fn inspect(path: &Path, require_mp4: bool) -> Result<VideoMetadata, AppError> {
         thumbnail_warning: None,
         playback_acceleration: unknown_playback(),
         keyframes_micros: vec![],
+        bit_rate: p.format.bit_rate.as_deref().and_then(|b| b.parse().ok()),
     })
 }
 pub const THUMBNAIL_COUNT: u64 = 14;

@@ -11,6 +11,7 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::atomic::{AtomicBool, AtomicI32, Ordering},
+    time::{Duration, Instant},
 };
 use tauri::{Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -32,12 +33,90 @@ pub struct ExportRequest {
     #[serde(default)]
     quality: Quality,
 }
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ExportProgress {
     fraction: f64,
     out_time_micros: u64,
     attempt: String,
+    bytes_written: u64,
+    estimated_bytes: Option<u64>,
+    /// True when `estimated_bytes` comes from a nominal tier bitrate.
+    approximate: bool,
+    remaining_micros: Option<u64>,
+    step: String,
+}
+const STEP_COPYING: &str = "Copying streams";
+const STEP_ENCODING: &str = "Decoding and encoding";
+const STEP_VALIDATING: &str = "Validating output";
+const STEP_FINALIZING: &str = "Finalizing file";
+type ProgressSink<'a> = Box<dyn FnMut(&ExportProgress) + Send + 'a>;
+// Weight of the newest sample in the time-remaining moving average.
+const ETA_ALPHA: f64 = 0.3;
+#[derive(Default)]
+struct Eta {
+    smoothed: Option<f64>,
+}
+impl Eta {
+    fn update(&mut self, elapsed: Duration, fraction: f64) -> Option<u64> {
+        if fraction <= 0.0 {
+            return None;
+        }
+        let raw = elapsed.as_secs_f64() * (1.0 - fraction) / fraction;
+        let smoothed = self
+            .smoothed
+            .map_or(raw, |prev| ETA_ALPHA * raw + (1.0 - ETA_ALPHA) * prev);
+        self.smoothed = Some(smoothed);
+        Some((smoothed * 1e6).round() as u64)
+    }
+}
+// Holds the latest payload so step changes re-emit it with the fraction
+// unchanged; each attempt restarts the clock and the moving average.
+struct Reporter<'a> {
+    sink: ProgressSink<'a>,
+    current: ExportProgress,
+    started: Instant,
+    eta: Eta,
+}
+impl<'a> Reporter<'a> {
+    fn new(sink: ProgressSink<'a>, estimate: Option<(u64, bool)>) -> Self {
+        Self {
+            sink,
+            current: ExportProgress {
+                estimated_bytes: estimate.map(|(bytes, _)| bytes),
+                approximate: estimate.is_some_and(|(_, approximate)| approximate),
+                ..Default::default()
+            },
+            started: Instant::now(),
+            eta: Eta::default(),
+        }
+    }
+    fn send(&mut self) {
+        (self.sink)(&self.current)
+    }
+    fn begin_attempt(&mut self, attempt: &str, step: &str) {
+        self.current.fraction = 0.0;
+        self.current.out_time_micros = 0;
+        self.current.bytes_written = 0;
+        self.current.remaining_micros = None;
+        self.current.attempt = attempt.into();
+        self.current.step = step.into();
+        self.started = Instant::now();
+        self.eta = Eta::default();
+        self.send()
+    }
+    fn step(&mut self, step: &str) {
+        self.current.step = step.into();
+        self.send()
+    }
+    fn progress(&mut self, out_time_micros: u64, duration: u64, bytes_written: u64) {
+        let fraction = (out_time_micros as f64 / duration as f64).clamp(0.0, 1.0);
+        self.current.fraction = fraction;
+        self.current.out_time_micros = out_time_micros;
+        self.current.bytes_written = bytes_written;
+        self.current.remaining_micros = self.eta.update(self.started.elapsed(), fraction);
+        self.send()
+    }
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,8 +169,88 @@ fn attempts(format: Format) -> Vec<AttemptKind> {
         Format::Webm | Format::Gif | Format::Copy => vec![AttemptKind::Software],
     }
 }
-fn progress_micros(line: &str) -> Option<u64> {
-    line.strip_prefix("out_time_us=")?.parse().ok()
+// Accumulates one `-progress` block; FFmpeg ends each block with `progress=`.
+// `N/A` values (and negative times before the first frame) keep the last value.
+#[derive(Default)]
+struct ProgressBlock {
+    out_time_micros: Option<u64>,
+    total_size: Option<u64>,
+}
+impl ProgressBlock {
+    fn feed(&mut self, line: &str) -> bool {
+        match line.split_once('=') {
+            Some(("out_time_us", v)) => {
+                if let Ok(v) = v.parse() {
+                    self.out_time_micros = Some(v)
+                }
+            }
+            Some(("total_size", v)) => {
+                if let Ok(v) = v.parse() {
+                    self.total_size = Some(v)
+                }
+            }
+            Some(("progress", _)) => return true,
+            _ => {}
+        }
+        false
+    }
+}
+// Formats like the frontend's `formatMicros`: `m:ss.mmm` or `h:mm:ss.mmm`.
+fn clock(micros: u64) -> String {
+    let ms = (micros + 500) / 1000;
+    let (h, m, s) = (ms / 3_600_000, ms % 3_600_000 / 60_000, ms % 60_000 / 1000);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}.{:03}", ms % 1000)
+    } else {
+        format!("{m}:{s:02}.{:03}", ms % 1000)
+    }
+}
+// Nominal video bitrates (bits/s) per re-encoding tier, plus the fixed audio
+// bitrate from `audio_args`. GIF has no bitrate; it assumes about one bit per
+// output pixel per frame after palette compression.
+const GIF_BITS_PER_PIXEL: f64 = 1.0;
+fn nominal_bitrate(format: Format, quality: Quality, has_audio: bool) -> Option<f64> {
+    let (video, audio) = match format {
+        Format::Mp4 => (
+            match quality {
+                Quality::Original => 8e6,
+                Quality::High => 5e6,
+                Quality::Small => 2.5e6,
+            },
+            192e3,
+        ),
+        Format::Webm => (
+            match quality {
+                Quality::Original => 6e6,
+                Quality::High => 4e6,
+                Quality::Small => 2e6,
+            },
+            128e3,
+        ),
+        Format::Gif | Format::Copy => return None,
+    };
+    Some(video + if has_audio { audio } else { 0.0 })
+}
+/// Estimated output bytes and whether the figure is approximate. `copy` scales
+/// the source bitrate; re-encodes use the tier's nominal bitrate.
+fn estimate_bytes(
+    format: Format,
+    quality: Quality,
+    source: &media::VideoMetadata,
+    duration_micros: u64,
+) -> Option<(u64, bool)> {
+    let seconds = duration_micros as f64 / 1e6;
+    let bits = match format {
+        Format::Copy => source.bit_rate? as f64 * seconds,
+        Format::Gif => {
+            let (fps, cap) = gif_settings(quality);
+            let width = cap.map_or(source.width, |c| c.min(source.width)) as f64;
+            let height = source.height as f64 * width / source.width.max(1) as f64;
+            width * height * fps as f64 * seconds * GIF_BITS_PER_PIXEL
+        }
+        Format::Mp4 | Format::Webm => nominal_bitrate(format, quality, source.has_audio)? * seconds,
+    };
+    Some(((bits / 8.0).round() as u64, format != Format::Copy))
 }
 fn destination(input: &Path, output: &Path, format: Format) -> Result<PathBuf, AppError> {
     let input = input.canonicalize()?;
@@ -320,17 +479,19 @@ fn args(plan: &ExportPlan, kind: AttemptKind, node: Option<&Path>) -> Vec<String
     a
 }
 async fn attempt(
-    app: &tauri::AppHandle,
+    reporter: &mut Reporter<'_>,
     state: &ExportState,
     logs: &LogPaths,
     plan: &ExportPlan<'_>,
     kind: AttemptKind,
     node: Option<&Path>,
+    first_step: &str,
 ) -> Result<(), String> {
     let temp = plan.temp;
     let duration = plan.duration;
     let label = kind.label(plan.format);
     let _ = fs::remove_file(temp);
+    reporter.begin_attempt(label, first_step);
     let stderr = OpenOptions::new()
         .create(true)
         .append(true)
@@ -361,8 +522,42 @@ async fn attempt(
         .take()
         .ok_or("FFmpeg progress pipe unavailable")?;
     let mut lines = BufReader::new(stdout).lines();
+    let mut block = ProgressBlock::default();
+    let mut first = true;
     loop {
-        tokio::select! {line=lines.next_line()=>match line.map_err(|e|e.to_string())?{Some(line)=>{if let Some(v)=progress_micros(&line){let _=app.emit("export-progress",ExportProgress{fraction:(v as f64/duration as f64).clamp(0.0,1.0),out_time_micros:v,attempt:label.into()});}},None=>break},_=tokio::time::sleep(std::time::Duration::from_millis(100))=>{if state.cancel.load(Ordering::SeqCst){let pid=state.pid.load(Ordering::SeqCst);if pid>0{unsafe{libc::kill(-pid,libc::SIGTERM);}}let _=child.wait().await;let _=fs::remove_file(temp);return Err("cancelled".into())}}}
+        tokio::select! {
+            line = lines.next_line() => match line.map_err(|e| e.to_string())? {
+                Some(line) => {
+                    if block.feed(&line) {
+                        if first && plan.format == Format::Copy {
+                            reporter.step(STEP_COPYING);
+                        }
+                        first = false;
+                        // `total_size` counts muxed bytes even while the file
+                        // write is still buffered; the file size is the fallback.
+                        let bytes = block
+                            .total_size
+                            .or_else(|| fs::metadata(temp).ok().map(|m| m.len()))
+                            .unwrap_or(0);
+                        reporter.progress(block.out_time_micros.unwrap_or(0), duration, bytes);
+                    }
+                }
+                None => break,
+            },
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                if state.cancel.load(Ordering::SeqCst) {
+                    let pid = state.pid.load(Ordering::SeqCst);
+                    if pid > 0 {
+                        unsafe {
+                            libc::kill(-pid, libc::SIGTERM);
+                        }
+                    }
+                    let _ = child.wait().await;
+                    let _ = fs::remove_file(temp);
+                    return Err("cancelled".into());
+                }
+            }
+        }
     }
     let status = child.wait().await.map_err(|e| e.to_string())?;
     if status.success() {
@@ -431,17 +626,18 @@ fn records(kind: AttemptKind, format: Format, node: Option<&Path>) -> Vec<Accele
         ],
     }
 }
-#[tauri::command]
-pub async fn start_export(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, ExportState>,
-    logs: tauri::State<'_, LogPaths>,
+struct Exported {
+    output: PathBuf,
+    kind: AttemptKind,
+    node: Option<PathBuf>,
+    effective_start: Option<u64>,
+}
+async fn run_export(
+    state: &ExportState,
+    logs: &LogPaths,
     request: ExportRequest,
-) -> Result<ExportResult, AppError> {
-    if state.active.swap(true, Ordering::SeqCst) {
-        return Err(AppError::ExportBusy);
-    }
-    let _guard = ActiveGuard(&state);
+    sink: ProgressSink<'_>,
+) -> Result<Exported, AppError> {
     if request.start_micros >= request.end_micros {
         return Err(AppError::InvalidTrim("start must be before end".into()));
     }
@@ -465,6 +661,23 @@ pub async fn start_export(
             }
         };
     }
+    let seek_from = effective_start.unwrap_or(request.start_micros);
+    let estimate = match media::probe_any(&input) {
+        Ok(source) => {
+            // Stream copy writes from the keyframe, not the selected start.
+            let span = if format == Format::Copy {
+                request.end_micros.saturating_sub(seek_from)
+            } else {
+                request.end_micros - request.start_micros
+            };
+            estimate_bytes(format, request.quality, &source, span)
+        }
+        Err(e) => {
+            tracing::warn!(reason=%e,"source probe failed; export size estimate unavailable");
+            None
+        }
+    };
+    let mut reporter = Reporter::new(sink, estimate);
     let plan = ExportPlan {
         format,
         quality: request.quality,
@@ -472,6 +685,11 @@ pub async fn start_export(
         temp: &temp_path,
         start: request.start_micros,
         duration: request.end_micros - request.start_micros,
+    };
+    let first_step = if format == Format::Copy {
+        format!("Seek to keyframe at {}", clock(seek_from))
+    } else {
+        STEP_ENCODING.to_owned()
     };
     let nodes = render_nodes();
     let mut selected = None;
@@ -486,7 +704,7 @@ pub async fn start_export(
             nodes.first().map(PathBuf::as_path)
         };
         tracing::info!(attempt=kind.label(format),format=?format,quality=?request.quality,device=?node,"starting export attempt");
-        match attempt(&app, &state, &logs, &plan, kind, node).await {
+        match attempt(&mut reporter, state, logs, &plan, kind, node, &first_step).await {
             Ok(()) => {
                 selected = Some((kind, node.map(Path::to_path_buf)));
                 break;
@@ -505,12 +723,21 @@ pub async fn start_export(
             logs.ffmpeg.display()
         ))
     })?;
+    // Copy has no separate validation step: probing a stream copy is part of
+    // finalizing it.
+    reporter.step(if format == Format::Copy {
+        STEP_FINALIZING
+    } else {
+        STEP_VALIDATING
+    });
     let validated = media::probe_any(&temp_path).map_err(|e| {
         let _ = fs::remove_file(&temp_path);
         AppError::Export(format!("output validation failed: {e}"))
     })?;
     if format == Format::Copy && effective_start.is_none() {
         effective_start = Some(request.end_micros.saturating_sub(validated.duration_micros));
+    } else if format != Format::Copy {
+        reporter.step(STEP_FINALIZING);
     }
     OpenOptions::new()
         .write(true)
@@ -520,7 +747,40 @@ pub async fn start_export(
         let _ = fs::remove_file(&temp_path);
         AppError::Destination(format!("could not finalize output: {e}"))
     })?;
-    let canonical = output.canonicalize()?;
+    Ok(Exported {
+        output: output.canonicalize()?,
+        kind,
+        node,
+        effective_start,
+    })
+}
+#[tauri::command]
+pub async fn start_export(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ExportState>,
+    logs: tauri::State<'_, LogPaths>,
+    request: ExportRequest,
+) -> Result<ExportResult, AppError> {
+    if state.active.swap(true, Ordering::SeqCst) {
+        return Err(AppError::ExportBusy);
+    }
+    let _guard = ActiveGuard(&state);
+    let format = request.format;
+    let emitter = app.clone();
+    let Exported {
+        output: canonical,
+        kind,
+        node,
+        effective_start,
+    } = run_export(
+        &state,
+        &logs,
+        request,
+        Box::new(move |p| {
+            let _ = emitter.emit("export-progress", p);
+        }),
+    )
+    .await?;
     let acceleration = records(kind, format, node.as_deref());
     let _ = app.emit("acceleration-update", &acceleration);
     tracing::info!(output=%canonical.display(),attempt=kind.label(format),effective_start_micros=?effective_start,"export completed");
@@ -728,8 +988,6 @@ mod tests {
     }
     #[test]
     fn progress_fallback_overwrite_validation_and_cleanup_are_transactional() {
-        assert_eq!(progress_micros("out_time_us=750000"), Some(750_000));
-        assert_eq!(progress_micros("progress=continue"), None);
         let software = records(AttemptKind::Software, Format::Mp4, None);
         assert!(software
             .iter()
@@ -1082,5 +1340,262 @@ mod tests {
             assert_eq!(exported.width % 2, 0);
             assert_eq!(exported.height % 2, 0);
         }
+    }
+    #[test]
+    fn progress_blocks_prefer_total_size_and_skip_unavailable_values() {
+        let mut block = ProgressBlock::default();
+        let first = [
+            "frame=0",
+            "total_size=N/A",
+            "out_time_us=N/A",
+            "out_time=-577014:32:22.775808",
+            "progress=continue",
+        ];
+        let ends: Vec<bool> = first.iter().map(|l| block.feed(l)).collect();
+        assert_eq!(ends, [false, false, false, false, true]);
+        assert_eq!((block.out_time_micros, block.total_size), (None, None));
+        for line in [
+            "frame=30",
+            "bitrate=1024.0kbits/s",
+            "total_size=131072",
+            "out_time_us=1000000",
+            "speed=2.0x",
+        ] {
+            assert!(!block.feed(line));
+        }
+        assert!(block.feed("progress=end"));
+        assert_eq!(block.out_time_micros, Some(1_000_000));
+        assert_eq!(block.total_size, Some(131_072));
+        // A later N/A keeps the previous value.
+        block.feed("total_size=N/A");
+        assert_eq!(block.total_size, Some(131_072));
+    }
+    #[test]
+    fn eta_is_smoothed_and_resets_with_each_attempt() {
+        let mut eta = Eta::default();
+        assert_eq!(eta.update(Duration::from_secs(1), 0.0), None);
+        // 25% after 1 s: 3 s left.
+        assert_eq!(eta.update(Duration::from_secs(1), 0.25), Some(3_000_000));
+        // A jump to 1 s raw is damped by the moving average.
+        let next = eta.update(Duration::from_secs(2), 2.0 / 3.0).unwrap();
+        assert_eq!(next, 2_400_000);
+        let mut sent = vec![];
+        let mut reporter = Reporter::new(
+            Box::new(|p: &ExportProgress| sent.push(p.clone())),
+            Some((1000, true)),
+        );
+        reporter.begin_attempt("first", STEP_ENCODING);
+        reporter.progress(500_000, 1_000_000, 400);
+        assert!(reporter.eta.smoothed.is_some());
+        reporter.begin_attempt("second", STEP_ENCODING);
+        assert!(reporter.eta.smoothed.is_none());
+        drop(reporter);
+        assert_eq!(sent[1].fraction, 0.5);
+        assert_eq!(sent[1].bytes_written, 400);
+        assert!(sent[1].remaining_micros.is_some());
+        assert_eq!(sent[2].attempt, "second");
+        assert_eq!(
+            (
+                sent[2].fraction,
+                sent[2].bytes_written,
+                sent[2].remaining_micros
+            ),
+            (0.0, 0, None)
+        );
+        assert!(sent
+            .iter()
+            .all(|p| p.estimated_bytes == Some(1000) && p.approximate));
+    }
+    #[test]
+    fn clock_matches_frontend_timecodes() {
+        assert_eq!(clock(2_000_000), "0:02.000");
+        assert_eq!(clock(100_338_400), "1:40.338");
+        assert_eq!(clock(3_725_000_000), "1:02:05.000");
+    }
+    #[test]
+    fn size_estimates_follow_format() {
+        let source = media::VideoMetadata {
+            path: String::new(),
+            preview_url: String::new(),
+            duration_micros: 10_000_000,
+            width: 1920,
+            height: 1080,
+            codec: "h264".into(),
+            frame_rate: 30.0,
+            has_audio: true,
+            audio_codec: Some("aac".into()),
+            thumbnails: vec![],
+            thumbnail_warning: None,
+            playback_acceleration: vec![],
+            keyframes_micros: vec![],
+            bit_rate: Some(4_000_000),
+        };
+        let est = |f, q| estimate_bytes(f, q, &source, 2_000_000);
+        assert_eq!(est(Format::Copy, Quality::Small), Some((1_000_000, false)));
+        assert_eq!(
+            est(Format::Mp4, Quality::High),
+            Some(((5_192_000.0 * 2.0 / 8.0) as u64, true))
+        );
+        assert_eq!(
+            est(Format::Webm, Quality::Small),
+            Some(((2_128_000.0 * 2.0 / 8.0) as u64, true))
+        );
+        // 480x270 at 10 fps for 2 s, one bit per pixel.
+        assert_eq!(
+            est(Format::Gif, Quality::Small),
+            Some((480 * 270 * 10 * 2 / 8, true))
+        );
+        let unknown = media::VideoMetadata {
+            bit_rate: None,
+            ..source
+        };
+        assert_eq!(
+            estimate_bytes(Format::Copy, Quality::Small, &unknown, 1),
+            None
+        );
+    }
+    #[test]
+    fn copy_estimate_matches_generated_bitrate() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("cbr.mp4");
+        let output = dir.path().join("copy.mp4");
+        generate(
+            &input,
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=s=320x240:r=30:d=4",
+                "-an",
+                "-c:v",
+                "libx264",
+                "-g",
+                "30",
+                "-b:v",
+                "1M",
+                "-minrate",
+                "1M",
+                "-maxrate",
+                "1M",
+                "-bufsize",
+                "500k",
+                "-x264-params",
+                "nal-hrd=cbr",
+                "-pix_fmt",
+                "yuv420p",
+            ],
+        );
+        let source = media::probe_any(&input).unwrap();
+        let bit_rate = source.bit_rate.unwrap();
+        assert!(
+            (800_000..=1_200_000).contains(&bit_rate),
+            "{bit_rate} bits/s"
+        );
+        let (estimate, approximate) =
+            estimate_bytes(Format::Copy, Quality::Original, &source, 2_000_000).unwrap();
+        assert!(!approximate);
+        assert_eq!(estimate, (bit_rate as f64 * 2.0 / 8.0).round() as u64);
+        run(&plan(
+            Format::Copy,
+            Quality::Original,
+            &input,
+            &output,
+            1_000_000,
+            2_000_000,
+        ));
+        let written = fs::metadata(&output).unwrap().len() as f64;
+        let ratio = written / estimate as f64;
+        assert!((0.7..=1.3).contains(&ratio), "{written} vs {estimate}");
+    }
+    fn logs(dir: &Path) -> LogPaths {
+        LogPaths {
+            state_dir: dir.into(),
+            application: dir.join("app.log"),
+            ffmpeg: dir.join("ffmpeg.log"),
+            gstreamer: dir.join("gst.log"),
+            verbose: false,
+        }
+    }
+    async fn collect_steps(dir: &Path, input: &Path, format: Format) -> Vec<ExportProgress> {
+        let state = ExportState::default();
+        let mut events = vec![];
+        let request = ExportRequest {
+            input: input.display().to_string(),
+            output: dir
+                .join(format!("out-{format:?}.{}", format.extension()))
+                .display()
+                .to_string(),
+            start_micros: 1_000_000,
+            end_micros: 3_000_000,
+            format,
+            quality: Quality::Small,
+        };
+        run_export(
+            &state,
+            &logs(dir),
+            request,
+            Box::new(|p: &ExportProgress| events.push(p.clone())),
+        )
+        .await
+        .unwrap();
+        events
+    }
+    fn distinct_steps(events: &[ExportProgress]) -> Vec<String> {
+        let mut steps: Vec<String> = events.iter().map(|p| p.step.clone()).collect();
+        // VA-API fallbacks repeat the first step once per attempt.
+        steps.dedup();
+        steps
+    }
+    #[tokio::test]
+    async fn export_emits_step_sequence_for_copy_and_mp4() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("source.mp4");
+        generate(
+            &input,
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=s=320x240:r=30:d=4",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=d=4",
+                "-c:v",
+                "libx264",
+                "-g",
+                "30",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-shortest",
+            ],
+        );
+        let copy = collect_steps(dir.path(), &input, Format::Copy).await;
+        assert_eq!(
+            distinct_steps(&copy),
+            [
+                "Seek to keyframe at 0:01.000",
+                STEP_COPYING,
+                STEP_FINALIZING
+            ]
+        );
+        // The estimate is known before FFmpeg reports anything.
+        assert!(copy[0].estimated_bytes.is_some_and(|b| b > 0));
+        assert!(!copy[0].approximate);
+        assert_eq!(copy[0].fraction, 0.0);
+        let last = copy.last().unwrap();
+        assert!(last.bytes_written > 0);
+        let mp4 = collect_steps(dir.path(), &input, Format::Mp4).await;
+        assert_eq!(
+            distinct_steps(&mp4),
+            [STEP_ENCODING, STEP_VALIDATING, STEP_FINALIZING]
+        );
+        assert!(mp4.iter().all(|p| p.approximate));
+        // Step events keep the fraction reached by the last progress event.
+        let reached = mp4[mp4.len() - 3].fraction;
+        assert!(reached > 0.9, "{reached}");
+        assert_eq!(mp4[mp4.len() - 1].fraction, reached);
     }
 }

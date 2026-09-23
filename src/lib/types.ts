@@ -49,7 +49,23 @@ export interface ExportProgress {
   fraction: number;
   outTimeMicros: number;
   attempt: string;
+  /** Bytes muxed so far: FFmpeg `total_size`, else the temporary file size. */
+  bytesWritten: number;
+  /** Expected output size, sent with the first event; `null` when unknown. */
+  estimatedBytes: number | null;
+  /** True when `estimatedBytes` comes from a nominal tier bitrate. */
+  approximate: boolean;
+  /** Smoothed time remaining for the current attempt; `null` until progress starts. */
+  remainingMicros: number | null;
+  /** Active pipeline step, one of `exportSteps(format)` (copy's seek step carries the time). */
+  step: string;
 }
+export const SEEK_STEP = "Seek to keyframe";
+/** Pipeline steps in order; step events name one of these. */
+export const exportSteps = (format: ExportFormat) =>
+  format === "copy"
+    ? [SEEK_STEP, "Copying streams", "Finalizing file"]
+    : ["Decoding and encoding", "Validating output", "Finalizing file"];
 export interface ExportResult {
   output: string;
   acceleration: AccelerationRecord[];

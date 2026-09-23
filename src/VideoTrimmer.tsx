@@ -129,6 +129,7 @@ export default function VideoTrimmer() {
         open={phase === "exporting"}
         output={t.outputPath}
         length={t.end - t.start}
+        format={t.format}
         progress={t.progress}
         onCancel={() => t.setConfirm(true)}
       />

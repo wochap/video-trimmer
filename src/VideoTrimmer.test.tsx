@@ -8,7 +8,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { LaunchOptions, VideoMetadata } from "@/lib/types";
+import type { ExportProgress, LaunchOptions, VideoMetadata } from "@/lib/types";
 type DragDropEvent = { payload: { type: string; paths: string[] } };
 const h = vi.hoisted(() => ({
   launch: vi.fn(),
@@ -702,25 +702,107 @@ describe("footer status", () => {
   });
 });
 describe("export dialog", () => {
-  it("shows destination, percent, and attempt from export progress", async () => {
-    const dialog = await exporting();
-    expect(within(dialog).getByText("one_trim.mp4 → /videos")).toBeVisible();
-    expect(within(dialog).getByText("Preparing")).toBeVisible();
+  const progress = (payload: Partial<ExportProgress>) =>
     act(() =>
       h.events["export-progress"]({
         payload: {
-          fraction: 0.62,
-          outTimeMicros: 1_240_000,
-          attempt: "Hardware encode (VA-API)",
+          fraction: 0,
+          outTimeMicros: 0,
+          attempt: "Software decode + libx264",
+          bytesWritten: 0,
+          estimatedBytes: null,
+          approximate: true,
+          remainingMicros: null,
+          step: "Decoding and encoding",
+          ...payload,
         },
       }),
     );
+  const steps = (dialog: HTMLElement) =>
+    within(within(dialog).getByRole("list", { name: "Export steps" }))
+      .getAllByRole("listitem")
+      .map((li) => [li.textContent, li.dataset.state]);
+  it("shows percent, time left, sizes, and steps mid-export", async () => {
+    const dialog = await exporting();
+    expect(within(dialog).getByText("one_trim.mp4 → /videos")).toBeVisible();
+    expect(within(dialog).getByText("Preparing")).toBeVisible();
+    progress({
+      fraction: 0.03,
+      outTimeMicros: 60_000,
+      remainingMicros: 40_000_000,
+      estimatedBytes: 142_000_000,
+    });
+    // Time remaining stays hidden below 5%.
+    expect(within(dialog).queryByText(/left$/)).toBeNull();
+    progress({
+      fraction: 0.62,
+      outTimeMicros: 1_240_000,
+      attempt: "VA-API decode + encode",
+      bytesWritten: 88_000_000,
+      estimatedBytes: 142_000_000,
+      remainingMicros: 6_200_000,
+    });
     expect(within(dialog).getByText("62%")).toBeVisible();
     expect(
       within(dialog).getByRole("progressbar", { name: "Export progress" }),
     ).toHaveAttribute("aria-valuenow", "62");
+    expect(within(dialog).getByText("about 6 s left")).toBeVisible();
     expect(within(dialog).getByText("0:01.240 / 0:02.000")).toBeVisible();
-    expect(within(dialog).getByText("Hardware encode (VA-API)")).toBeVisible();
+    expect(within(dialog).getByText("88 MB of ≈ 142 MB")).toBeVisible();
+    expect(within(dialog).getByText("VA-API decode + encode")).toBeVisible();
+    expect(steps(dialog)).toEqual([
+      ["Decoding and encoding", "active"],
+      ["Validating output", "pending"],
+      ["Finalizing file", "pending"],
+    ]);
+    progress({
+      fraction: 0.62,
+      outTimeMicros: 1_240_000,
+      bytesWritten: 140_500_000,
+      estimatedBytes: 142_000_000,
+      step: "Validating output",
+    });
+    expect(steps(dialog)).toEqual([
+      ["Decoding and encoding", "done"],
+      ["Validating output", "active"],
+      ["Finalizing file", "pending"],
+    ]);
+  });
+  it("shows an exact estimate and the keyframe seek for copy", async () => {
+    h.exportVideo.mockReturnValue(new Promise(() => {}));
+    await ready();
+    await userEvent.click(screen.getByRole("radio", { name: "Copy" }));
+    await userEvent.click(trimButton());
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "Trimming…",
+    });
+    progress({
+      attempt: "Stream copy",
+      estimatedBytes: 4_200_000,
+      approximate: false,
+      step: "Seek to keyframe at 0:00.000",
+    });
+    expect(within(dialog).getByText("0 B of 4.2 MB")).toBeVisible();
+    expect(steps(dialog)).toEqual([
+      ["Seek to keyframe at 0:00.000", "active"],
+      ["Copying streams", "pending"],
+      ["Finalizing file", "pending"],
+    ]);
+    progress({
+      attempt: "Stream copy",
+      fraction: 0.5,
+      outTimeMicros: 1_000_000,
+      bytesWritten: 2_100_000,
+      estimatedBytes: 4_200_000,
+      approximate: false,
+      step: "Copying streams",
+    });
+    expect(within(dialog).getByText("2.1 MB of 4.2 MB")).toBeVisible();
+    expect(steps(dialog)).toEqual([
+      ["Seek to keyframe at 0:00.000", "done"],
+      ["Copying streams", "active"],
+      ["Finalizing file", "pending"],
+    ]);
   });
   it("routes Cancel trim to the confirmation and cancels the export", async () => {
     const dialog = await exporting();

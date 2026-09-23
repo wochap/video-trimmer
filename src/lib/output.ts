@@ -27,3 +27,14 @@ export function joinOutput(
   if (!dir) return file;
   return dir.endsWith("/") ? `${dir}${file}` : `${dir}/${file}`;
 }
+/** Decimal size such as `88 MB` or `4.2 GB`; one decimal below 10 units. */
+export function formatBytes(bytes: number) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = Math.max(0, bytes);
+  let i = 0;
+  while (value >= 1000 && i < units.length - 1) {
+    value /= 1000;
+    i++;
+  }
+  return `${i === 0 || value >= 10 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
+}

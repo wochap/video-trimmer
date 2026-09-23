@@ -35,3 +35,11 @@ export function parseTimecode(text: string): number | null {
   const seconds = Number(h ?? 0) * 3600 + Number(min ?? 0) * 60 + Number(s);
   return seconds * MICROS_PER_SECOND + Number(frac.padEnd(6, "0"));
 }
+/** Coarse remaining time: `about 6 s left`, `about 3 min left`, `about 1 h 5 min left`. */
+export function formatRemaining(micros: number) {
+  const s = Math.max(1, Math.round(micros / MICROS_PER_SECOND));
+  if (s < 60) return `about ${s} s left`;
+  const min = Math.round(s / 60);
+  if (min < 60) return `about ${min} min left`;
+  return `about ${Math.floor(min / 60)} h ${min % 60} min left`;
+}

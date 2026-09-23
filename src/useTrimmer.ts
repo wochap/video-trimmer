@@ -304,7 +304,7 @@ export function useTrimmer() {
     boundedVersion.current += 1;
     player.current?.pause();
     setPhase("exporting");
-    setProgress({ fraction: 0, outTimeMicros: 0, attempt: "Preparing" });
+    setProgress(null);
     setError("");
     setSavedPath("");
     try {

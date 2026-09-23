@@ -32,4 +32,9 @@ Manual checks for formats, quality, and on-done:
 - [ ] `--on-done exit`: one trim prints one line and the app exits 0.
 - [ ] `--force` is rejected with usage text.
 
+Manual checks for export progress details (screen 3d):
+
+- [ ] `--format copy` on a long source shows `Seek to keyframe at <time>`, then `Copying streams`, then `Finalizing file`; the size reads `<written> of <estimate>` without `≈` and ends close to the estimate.
+- [ ] `--format mp4` shows `Decoding and encoding`, `Validating output`, `Finalizing file`; the size reads `of ≈ <estimate>`; `about N s left` appears only after 5% and does not jump when a VA-API attempt falls back.
+
 HDR, 10-bit color, unusual color metadata, and VFR sources are converted to broadly compatible H.264/AAC and may not preserve every source characteristic. MP4 is the only supported input container.
