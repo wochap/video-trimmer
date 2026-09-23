@@ -32,3 +32,8 @@ openspec/changes/archive
 AGENTS.md
 RTK.md
 video-test.mp4
+
+.rtk
+.direnv
+.pi
+.agents
