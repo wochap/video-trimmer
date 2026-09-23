@@ -1,6 +1,20 @@
-use crate::{cli::LaunchOptions, error::AppError, media::MediaState};
-use std::sync::Mutex;
-pub struct LaunchState(pub Mutex<Option<LaunchOptions>>);
+use crate::{cli::LaunchOptions, error::AppError, lifecycle, media::MediaState};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
+pub struct LaunchState {
+    pub options: Mutex<Option<LaunchOptions>>,
+    pub succeeded: AtomicBool,
+}
+impl LaunchState {
+    pub fn new(options: LaunchOptions) -> Self {
+        Self {
+            options: Mutex::new(Some(options)),
+            succeeded: AtomicBool::new(false),
+        }
+    }
+}
 pub struct LogGuard {
     pub _guard: tracing_appender::non_blocking::WorkerGuard,
 }
@@ -9,19 +23,43 @@ pub fn take_launch_options(
     state: tauri::State<'_, LaunchState>,
 ) -> Result<LaunchOptions, AppError> {
     state
-        .0
+        .options
         .lock()
         .map_err(|_| AppError::Internal("launch state poisoned".into()))?
         .take()
         .ok_or_else(|| AppError::Internal("launch options were already consumed".into()))
 }
-#[tauri::command]
-pub fn exit_application(app: tauri::AppHandle, media: tauri::State<'_, MediaState>, code: i32) {
-    crate::media::cleanup(&media);
-    let exit_code = if code == crate::lifecycle::EXIT_CANCELLED {
-        crate::lifecycle::EXIT_CANCELLED
+// Any successful export makes the session a success, so staying open and
+// closing later still exits 0. Otherwise only cancellation keeps its code.
+fn exit_code(requested: i32, succeeded: bool) -> i32 {
+    if succeeded {
+        0
+    } else if requested == lifecycle::EXIT_CANCELLED {
+        lifecycle::EXIT_CANCELLED
     } else {
-        crate::lifecycle::EXIT_FAILURE
-    };
-    app.exit(exit_code)
+        lifecycle::EXIT_FAILURE
+    }
+}
+#[tauri::command]
+pub fn exit_application(
+    app: tauri::AppHandle,
+    media: tauri::State<'_, MediaState>,
+    launch: tauri::State<'_, LaunchState>,
+    code: i32,
+) {
+    crate::media::cleanup(&media);
+    app.exit(exit_code(code, launch.succeeded.load(Ordering::SeqCst)))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn exit_code_is_zero_only_after_success() {
+        assert_eq!(exit_code(0, true), 0);
+        assert_eq!(exit_code(130, true), 0);
+        assert_eq!(exit_code(1, true), 0);
+        assert_eq!(exit_code(0, false), lifecycle::EXIT_FAILURE);
+        assert_eq!(exit_code(130, false), lifecycle::EXIT_CANCELLED);
+        assert_eq!(exit_code(1, false), lifecycle::EXIT_FAILURE);
+    }
 }

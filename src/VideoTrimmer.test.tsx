@@ -7,7 +7,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { VideoMetadata } from "@/lib/types";
+import type { LaunchOptions, VideoMetadata } from "@/lib/types";
 type DragDropEvent = { payload: { type: string; paths: string[] } };
 const h = vi.hoisted(() => ({
   launch: vi.fn(),
@@ -40,7 +40,14 @@ vi.mock("@tauri-apps/api/window", () => ({
   }),
 }));
 import VideoTrimmer from "./VideoTrimmer";
-const launch = { input: null, output: null, force: false, verbose: false };
+const launch: LaunchOptions = {
+  input: null,
+  output: null,
+  format: "mp4",
+  quality: "original",
+  onDone: "exit",
+  verbose: false,
+};
 const metadata = (
   path = "/videos/one.mp4",
   warning?: string,
@@ -56,6 +63,7 @@ const metadata = (
   thumbnails: warning ? [] : ["asset://thumb.jpg"],
   thumbnailWarning: warning,
   playbackAcceleration: [{ component: "playback_decode", state: "unknown" }],
+  keyframesMicros: [0, 1_000_000],
 });
 beforeEach(() => {
   vi.clearAllMocks();
@@ -324,5 +332,61 @@ describe("editor workflows", () => {
       screen.getByRole("button", { name: "Cancel export" }),
     );
     expect(h.cancel).toHaveBeenCalled();
+  });
+  it("exits after a successful export with the exit policy", async () => {
+    h.open.mockResolvedValueOnce("/videos/one.mp4");
+    h.save.mockResolvedValueOnce("/videos/one_trim.mp4");
+    h.exportVideo.mockResolvedValueOnce({
+      output: "/videos/one_trim.mp4",
+      acceleration: [],
+      effectiveStartMicros: 0,
+    });
+    await ready();
+    fireEvent.loadedMetadata(document.querySelector("video")!);
+    await userEvent.click(screen.getByRole("button", { name: /trim/i }));
+    await waitFor(() => expect(h.exit).toHaveBeenCalledWith(0));
+    expect(h.save).toHaveBeenCalledWith(
+      expect.objectContaining({ defaultPath: "/videos/one_trim.mp4" }),
+    );
+    expect(h.exportVideo).toHaveBeenCalledWith({
+      input: "/videos/one.mp4",
+      output: "/videos/one_trim.mp4",
+      startMicros: 0,
+      endMicros: 2_000_000,
+      format: "mp4",
+      quality: "original",
+    });
+  });
+  it("stays open after a successful export with the stay policy", async () => {
+    h.launch.mockResolvedValueOnce({
+      ...launch,
+      format: "gif",
+      quality: "small",
+      onDone: "stay",
+    });
+    h.open.mockResolvedValueOnce("/videos/one.mp4");
+    h.save.mockResolvedValue("/videos/one_trim.gif");
+    h.exportVideo.mockResolvedValue({
+      output: "/videos/one_trim.gif",
+      acceleration: [],
+      effectiveStartMicros: 0,
+    });
+    await ready();
+    fireEvent.loadedMetadata(document.querySelector("video")!);
+    await userEvent.click(screen.getByRole("button", { name: /trim/i }));
+    expect(await screen.findByText("Saved /videos/one_trim.gif")).toBeVisible();
+    expect(h.save).toHaveBeenCalledWith(
+      expect.objectContaining({ defaultPath: "/videos/one_trim.gif" }),
+    );
+    expect(h.exportVideo).toHaveBeenCalledWith(
+      expect.objectContaining({ format: "gif", quality: "small" }),
+    );
+    expect(h.exit).not.toHaveBeenCalled();
+    expect(screen.getByText("/videos/one.mp4")).toBeVisible();
+    const trim = screen.getByRole("button", { name: /trim/i });
+    expect(trim).toBeEnabled();
+    await userEvent.click(trim);
+    await waitFor(() => expect(h.exportVideo).toHaveBeenCalledTimes(2));
+    expect(h.exit).not.toHaveBeenCalled();
   });
 });

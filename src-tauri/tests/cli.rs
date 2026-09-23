@@ -28,7 +28,7 @@ fn unavailable_wayland_is_nonzero_and_stdout_clean() {
     let output = binary()
         .env_remove("WAYLAND_DISPLAY")
         .arg("example.mp4")
-        .args(["--output", "out.mp4", "--force", "--verbose"])
+        .args(["--output", "out.mp4", "--verbose"])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
@@ -56,4 +56,49 @@ fn simultaneous_invocations_own_independent_streams() {
     assert!(first.stderr.is_empty() && second.stderr.is_empty());
     assert!(String::from_utf8_lossy(&first.stdout).contains("Usage:"));
     assert!(String::from_utf8_lossy(&second.stdout).contains(env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
+fn removed_force_and_invalid_option_values_are_rejected() {
+    for args in [
+        vec!["--force"],
+        vec!["-f"],
+        vec!["--format", "avi"],
+        vec!["--quality", "ultra"],
+        vec!["--on-done", "later"],
+    ] {
+        let output = binary()
+            .env_remove("WAYLAND_DISPLAY")
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{args:?} was accepted");
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("--help"));
+    }
+}
+
+#[test]
+fn invalid_config_file_exits_before_window() {
+    let dir = tempfile::tempdir().unwrap();
+    // A listening socket is enough for the Wayland reachability check, so the
+    // config error is the first failure the binary can hit.
+    let _listener =
+        std::os::unix::net::UnixListener::bind(dir.path().join("wayland-test")).unwrap();
+    let config = dir.path().join("config/video-trimmer");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("config.toml"), "fromat = \"gif\"\n").unwrap();
+    let output = binary()
+        .env("WAYLAND_DISPLAY", "wayland-test")
+        .env("XDG_RUNTIME_DIR", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path().join("config"))
+        .env("XDG_STATE_HOME", dir.path().join("state"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("config.toml"), "{stderr}");
+    assert!(stderr.contains("fromat"), "{stderr}");
+    assert!(!dir.path().join("state").exists());
 }

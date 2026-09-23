@@ -40,6 +40,7 @@ pub struct VideoMetadata {
     pub thumbnails: Vec<String>,
     pub thumbnail_warning: Option<String>,
     pub playback_acceleration: Vec<AccelerationRecord>,
+    pub keyframes_micros: Vec<u64>,
 }
 #[derive(Deserialize)]
 struct Probe {
@@ -92,6 +93,61 @@ fn parse_rate(s: Option<&str>) -> f64 {
     }
 }
 pub fn probe(path: &Path) -> Result<VideoMetadata, AppError> {
+    let mut metadata = inspect(path, true)?;
+    metadata.keyframes_micros = keyframes(path).unwrap_or_else(|e| {
+        tracing::warn!(path = %path.display(), reason = %e, "keyframe index unavailable");
+        vec![]
+    });
+    Ok(metadata)
+}
+// Validates any container FFmpeg can read, for non-MP4 export outputs.
+pub fn probe_any(path: &Path) -> Result<VideoMetadata, AppError> {
+    inspect(path, false)
+}
+// Reads packet flags instead of decoding frames, so indexing stays cheap on
+// long files. Timestamps come back ascending and deduplicated.
+pub fn keyframes(path: &Path) -> Result<Vec<u64>, String> {
+    let out = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "packet=pts_time,flags",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .map_err(|e| format!("could not start ffprobe: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_owned());
+    }
+    let mut times = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (pts, flags) = line.split_once(',')?;
+            if !flags.starts_with('K') {
+                return None;
+            }
+            let seconds = pts.parse::<f64>().ok()?;
+            Some((seconds.max(0.0) * 1_000_000.0).round() as u64)
+        })
+        .collect::<Vec<_>>();
+    times.sort_unstable();
+    times.dedup();
+    Ok(times)
+}
+// Latest keyframe at or before `start` (the first keyframe when `start`
+// precedes it); `None` when the index is empty.
+pub fn keyframe_at_or_before(keyframes: &[u64], start: u64) -> Option<u64> {
+    match keyframes.partition_point(|k| *k <= start) {
+        0 => keyframes.first().copied(),
+        index => Some(keyframes[index - 1]),
+    }
+}
+fn inspect(path: &Path, require_mp4: bool) -> Result<VideoMetadata, AppError> {
     let out = Command::new("ffprobe")
         .args([
             "-v",
@@ -111,13 +167,14 @@ pub fn probe(path: &Path) -> Result<VideoMetadata, AppError> {
     }
     let p: Probe = serde_json::from_slice(&out.stdout)
         .map_err(|e| AppError::Probe(format!("invalid ffprobe JSON: {e}")))?;
-    if !p
-        .format
-        .format_name
-        .as_deref()
-        .unwrap_or("")
-        .split(',')
-        .any(|v| v == "mov" || v == "mp4")
+    if require_mp4
+        && !p
+            .format
+            .format_name
+            .as_deref()
+            .unwrap_or("")
+            .split(',')
+            .any(|v| v == "mov" || v == "mp4")
     {
         return Err(AppError::Probe("container is not recognized as MP4".into()));
     }
@@ -149,6 +206,7 @@ pub fn probe(path: &Path) -> Result<VideoMetadata, AppError> {
         thumbnails: vec![],
         thumbnail_warning: None,
         playback_acceleration: unknown_playback(),
+        keyframes_micros: vec![],
     })
 }
 fn thumbnails(path: &Path, duration: u64) -> Result<(PathBuf, Vec<String>), String> {
@@ -343,6 +401,47 @@ mod tests {
         let malformed = dir.path().join("broken.mp4");
         fs::write(&malformed, b"not media").unwrap();
         assert!(matches!(probe(&malformed), Err(AppError::Probe(_))));
+    }
+    #[test]
+    fn indexes_keyframes_ascending_from_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("gop.mp4");
+        let status = Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=s=160x120:r=30:d=5",
+                "-c:v",
+                "libx264",
+                "-g",
+                "60",
+                "-keyint_min",
+                "60",
+                "-sc_threshold",
+                "0",
+                "-pix_fmt",
+                "yuv420p",
+                "-y",
+            ])
+            .arg(&source)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let metadata = probe(&source).unwrap();
+        assert_eq!(metadata.keyframes_micros, vec![0, 2_000_000, 4_000_000]);
+        let broken = dir.path().join("broken.mp4");
+        fs::write(&broken, b"not media").unwrap();
+        assert!(keyframes(&broken).is_err());
+        let k = [0, 2_000_000, 4_000_000];
+        assert_eq!(keyframe_at_or_before(&k, 2_500_000), Some(2_000_000));
+        assert_eq!(keyframe_at_or_before(&k, 2_000_000), Some(2_000_000));
+        assert_eq!(keyframe_at_or_before(&k, 9_000_000), Some(4_000_000));
+        assert_eq!(keyframe_at_or_before(&[33_000], 0), Some(33_000));
+        assert_eq!(keyframe_at_or_before(&[], 1), None);
     }
     #[test]
     fn replacement_cleans_previous_cache() {

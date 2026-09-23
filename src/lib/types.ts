@@ -10,10 +10,15 @@ export interface AccelerationRecord {
   device?: string;
   reason?: string;
 }
+export type ExportFormat = "mp4" | "webm" | "gif" | "copy";
+export type ExportQuality = "original" | "high" | "small";
+export type OnDone = "exit" | "stay";
 export interface LaunchOptions {
   input: string | null;
   output: string | null;
-  force: boolean;
+  format: ExportFormat;
+  quality: ExportQuality;
+  onDone: OnDone;
   verbose: boolean;
 }
 export interface VideoMetadata {
@@ -28,13 +33,15 @@ export interface VideoMetadata {
   thumbnails: string[];
   thumbnailWarning?: string;
   playbackAcceleration: AccelerationRecord[];
+  keyframesMicros: number[];
 }
 export interface ExportRequest {
   input: string;
   output: string;
   startMicros: number;
   endMicros: number;
-  force: boolean;
+  format: ExportFormat;
+  quality: ExportQuality;
 }
 export interface ExportProgress {
   fraction: number;
@@ -44,4 +51,6 @@ export interface ExportProgress {
 export interface ExportResult {
   output: string;
   acceleration: AccelerationRecord[];
+  /** Where the output actually begins; for `copy` this is the keyframe at or before the selected start, `null` when unknown. */
+  effectiveStartMicros: number | null;
 }

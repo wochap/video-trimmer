@@ -12,6 +12,7 @@ import {
 } from "@/lib/time";
 import type {
   AccelerationRecord,
+  ExportFormat,
   ExportProgress,
   LaunchOptions,
   VideoMetadata,
@@ -23,6 +24,16 @@ import { Timeline } from "@/components/Timeline";
 import { AccelerationBadge } from "@/components/AccelerationBadge";
 type Phase = "empty" | "loading" | "ready" | "exporting" | "error";
 const mp4 = (p: string) => p.toLowerCase().endsWith(".mp4");
+const extension = (format: ExportFormat) =>
+  format === "copy" ? "mp4" : format;
+// Export records replace earlier export records but keep playback ones.
+const withExport = (
+  previous: AccelerationRecord[],
+  exported: AccelerationRecord[],
+) => [
+  ...previous.filter((r) => !r.component.startsWith("export_")),
+  ...exported,
+];
 const errorMessage = (error: unknown) =>
   typeof error === "string"
     ? error
@@ -36,6 +47,7 @@ export default function VideoTrimmer() {
   const [phase, setPhase] = useState<Phase>("empty"),
     [video, setVideo] = useState<VideoMetadata | null>(null),
     [error, setError] = useState(""),
+    [notice, setNotice] = useState(""),
     [drag, setDrag] = useState(false),
     [start, setStart] = useState(0),
     [end, setEnd] = useState(0),
@@ -47,7 +59,9 @@ export default function VideoTrimmer() {
     [launch, setLaunch] = useState<LaunchOptions>({
       input: null,
       output: null,
-      force: false,
+      format: "mp4",
+      quality: "original",
+      onDone: "exit",
       verbose: false,
     }),
     [acceleration, setAcceleration] = useState<AccelerationRecord[]>([]);
@@ -71,6 +85,7 @@ export default function VideoTrimmer() {
       boundedVersion.current += 1;
       setPhase("loading");
       setError("");
+      setNotice("");
       try {
         const next = await backend.loadInput(path);
         setVideo(next);
@@ -133,7 +148,7 @@ export default function VideoTrimmer() {
     const stops = [
       listen<ExportProgress>("export-progress", (e) => setProgress(e.payload)),
       listen<AccelerationRecord[]>("acceleration-update", (e) =>
-        setAcceleration(e.payload),
+        setAcceleration((previous) => withExport(previous, e.payload)),
       ),
     ];
     return () => {
@@ -218,11 +233,12 @@ export default function VideoTrimmer() {
   };
   const trim = useCallback(async () => {
     if (!video || !previewOk || phase === "exporting") return;
+    const ext = extension(launch.format);
     let output = launch.output;
     if (!output)
       output = await save({
-        defaultPath: `${video.path.replace(/\.mp4$/i, "")}-trimmed.mp4`,
-        filters: [{ name: "MP4 video", extensions: ["mp4"] }],
+        defaultPath: `${video.path.replace(/\.mp4$/i, "")}_trim.${ext}`,
+        filters: [{ name: `${ext.toUpperCase()} file`, extensions: [ext] }],
       });
     if (!output) return;
     cancelRequested.current = false;
@@ -233,15 +249,24 @@ export default function VideoTrimmer() {
     setPhase("exporting");
     setProgress({ fraction: 0, outTimeMicros: 0, attempt: "Preparing" });
     setError("");
+    setNotice("");
     try {
       const result = await backend.exportVideo({
         input: video.path,
         output,
         startMicros: start,
         endMicros: end,
-        force: launch.force,
+        format: launch.format,
+        quality: launch.quality,
       });
-      setAcceleration(result.acceleration);
+      setAcceleration((previous) => withExport(previous, result.acceleration));
+      if (launch.onDone === "exit") {
+        await backend.exit(0);
+        return;
+      }
+      setProgress(null);
+      setNotice(`Saved ${result.output}`);
+      setPhase("ready");
     } catch (e) {
       if (cancelRequested.current) {
         await backend.exit(130);
@@ -448,9 +473,9 @@ export default function VideoTrimmer() {
         <p
           role="status"
           aria-live="polite"
-          className="text-sm text-destructive"
+          className={`text-sm ${error ? "text-destructive" : "text-muted-foreground"}`}
         >
-          {error}
+          {error || notice}
         </p>
         <div className="flex gap-2">
           <Button variant="secondary" onClick={cancel}>

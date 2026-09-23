@@ -2,13 +2,16 @@
 
 <img width="2464" height="1668" alt="Screenshot_2026-08-29_08-54-15" src="https://github.com/user-attachments/assets/e1835962-3ad7-44a1-abec-490ec577a464" />
 
-A minimal Wayland-only MP4 trimmer for Hyprland. Select an in/out range, preview it, and export a precise H.264 cut with optional VA-API acceleration.
+A minimal Wayland-only MP4 trimmer for Hyprland. Select an in/out range, preview it, and export a precise cut as MP4 (H.264, optional VA-API acceleration), WebM, GIF, or a fast stream copy.
 
 ## Features
 
 - QuickTime-style timeline with mouse and keyboard controls
 - Precise cuts through re-encoding instead of keyframe-only splitting
-- Hardware-accelerated export with an automatic software fallback
+- Output formats: MP4, WebM (VP9/Opus), GIF, or stream copy
+- Quality tiers that cap resolution and bitrate
+- Hardware-accelerated MP4 export with an automatic software fallback
+- Defaults stored in a config file, overridable per run
 - File picker, drag and drop, and command-line input/output paths
 
 ## Install
@@ -28,16 +31,40 @@ nix run github:wochap/video-trimmer -- video.mp4
 ## Usage
 
 ```sh
-video-trimmer [INPUT] [-o PATH] [-f] [-v]
+video-trimmer [INPUT] [-o PATH] [--format FORMAT] [--quality QUALITY] [--on-done POLICY] [-v]
 ```
 
 ```sh
 video-trimmer recording.mp4
 video-trimmer recording.mp4 -o clip.mp4
-video-trimmer recording.mp4 -o clip.mp4 --force
+video-trimmer recording.mp4 -o clip.gif --quality small
+video-trimmer recording.mp4 --format copy --on-done stay
 ```
 
-`--force` allows an existing output file to be replaced. `--verbose` enables detailed media logs.
+Options:
+
+- `-o, --output PATH` — destination file. Its extension must match the format (`.mp4` for `mp4` and `copy`, `.webm`, `.gif`). Without `--format`, the extension picks the format. An existing file is replaced without asking; only the source file itself is refused. Without `--output`, the editor suggests `<source-stem>_trim.<ext>` next to the source.
+- `--format mp4|webm|gif|copy` — `mp4` (default) re-encodes to H.264/AAC. `webm` re-encodes to VP9/Opus in software, which is slow on long selections. `gif` builds a palette GIF without audio. `copy` copies the streams without re-encoding: it is fast, but the output starts at the nearest keyframe at or before the selected start, and it may run a frame or two past the selected end. When `--format` disagrees with the `--output` extension, the flag wins and the extension is rewritten.
+- `--quality original|high|small` — `original` (default) keeps the source resolution. `high` fits video inside 1920x1080 and `small` inside 1280x720 (portrait sources use the rotated box); sources are never upscaled. For GIF, `high` caps width at 720 and `small` at 480, at 12 and 10 fps (15 fps for `original`). `copy` ignores quality.
+- `--on-done exit|stay` — `exit` (default) closes the app after a successful trim. `stay` returns to the editor so you can trim again; each successful trim prints its path on its own stdout line, and the app exits with status 0 when closed.
+- `-v, --verbose` — detailed media logs.
+
+`-f/--force` was removed: the destination is always shown before trimming, so existing files are replaced.
+
+### Config file
+
+Defaults are read from `$XDG_CONFIG_HOME/video-trimmer/config.toml` (or `~/.config/video-trimmer/config.toml`). Every key is optional:
+
+```toml
+# mp4 | webm | gif | copy
+format = "mp4"
+# original | high | small
+quality = "original"
+# exit | stay
+on_done = "exit"
+```
+
+Precedence, later wins: built-in default, config file, `--output` extension (format only), command-line flag. An unknown key, invalid value, or malformed file stops startup with a message naming the file and key.
 
 Useful controls:
 
@@ -77,7 +104,7 @@ nix build
 
 ## Notes
 
-Only local MP4 files and one continuous time range are supported. Exports use H.264 with optional AAC audio and may normalize unusual formats for compatibility. The app requires native Wayland and does not fall back to X11/XWayland.
+Only local MP4 input files and one continuous time range are supported. Re-encoded exports may normalize unusual formats for compatibility. The app requires native Wayland and does not fall back to X11/XWayland.
 
 On success, stdout contains only the absolute output path. Logs are written to stderr and `$XDG_STATE_HOME/video-trimmer` (usually `~/.local/state/video-trimmer`). See [docs/verification.md](docs/verification.md) for supported media scenarios.
 

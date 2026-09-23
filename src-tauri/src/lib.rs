@@ -1,6 +1,7 @@
 mod acceleration;
 mod app;
 mod cli;
+mod config;
 mod error;
 mod export;
 mod lifecycle;
@@ -8,7 +9,7 @@ mod logging;
 mod media;
 mod preview_server;
 use clap::Parser;
-use std::{os::unix::net::UnixStream, path::PathBuf, sync::Mutex};
+use std::{os::unix::net::UnixStream, path::PathBuf};
 use tauri::{Manager, RunEvent};
 fn validate_wayland() -> Result<String, String> {
     std::env::set_var("GDK_BACKEND", "wayland");
@@ -38,6 +39,14 @@ pub fn run() {
             std::process::exit(lifecycle::EXIT_STARTUP)
         }
     };
+    let file_config = match config::load() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("video-trimmer: {e}");
+            std::process::exit(lifecycle::EXIT_STARTUP)
+        }
+    };
+    let effective = config::resolve(&cli, &file_config);
     let (log_paths, guard) = match logging::init(cli.verbose) {
         Ok(v) => v,
         Err(e) => {
@@ -53,12 +62,15 @@ pub fn run() {
         state_dir = %state_dir,
         application_log = %application_log,
         gstreamer_log = %gstreamer_log,
+        format = ?effective.format,
+        quality = ?effective.quality,
+        on_done = ?effective.on_done,
         "starting native Wayland application"
     );
-    let launch = cli::LaunchOptions::from(cli);
+    let launch = cli::LaunchOptions::new(cli, effective);
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(app::LaunchState(Mutex::new(Some(launch))))
+        .manage(app::LaunchState::new(launch))
         .manage(media::MediaState::default())
         .manage(export::ExportState::default())
         .manage(log_paths)
