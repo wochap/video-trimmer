@@ -112,3 +112,25 @@ The system SHALL collect the presentation timestamps of the video stream's keyfr
 #### Scenario: Indexing fails
 - **WHEN** keyframe timestamps cannot be read
 - **THEN** the editor still enters the ready state with an empty keyframe list and copy exports report the effective start only after export
+
+### Requirement: Inspection progress reporting
+The system SHALL report inspection as an ordered sequence of named steps (`Reading container`, `Indexing keyframes`, `Building preview`, `Building thumbnails`) with a completion fraction, and the editor SHALL show completed, active, and pending steps with a progress bar while inspecting.
+
+#### Scenario: Step advances
+- **WHEN** the container probe finishes and keyframe indexing starts
+- **THEN** the editor marks `Reading container` complete and `Indexing keyframes` active
+
+#### Scenario: Step fails
+- **WHEN** a non-fatal step such as thumbnail generation fails
+- **THEN** the remaining steps still complete, the editor enters the ready state, and the degraded state is reported as today
+
+### Requirement: Progressive thumbnails
+The system SHALL deliver each generated thumbnail to the editor as soon as it is written, and the timeline strip SHALL fill from left to right while the remaining cells show placeholders.
+
+#### Scenario: Thumbnails arrive
+- **WHEN** the fifth of fourteen thumbnails is written
+- **THEN** the strip shows five images and nine placeholders
+
+#### Scenario: Load replaced mid-inspection
+- **WHEN** the user opens another file before inspection completes
+- **THEN** thumbnails from the previous file are discarded and never appear in the new strip
