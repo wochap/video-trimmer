@@ -1,4 +1,5 @@
-import { FolderOpen, PanelRight } from "lucide-react";
+import { FolderOpen, SidebarSimple } from "@phosphor-icons/react";
+import { Icon } from "@/components/ui/icon";
 import type { AccelerationRecord, VideoMetadata } from "@/lib/types";
 import { splitPath } from "@/lib/output";
 import { AccelerationBadge } from "@/components/AccelerationBadge";
@@ -88,11 +89,11 @@ export function Header({
                 onClick={onOpen}
                 disabled={busy}
               >
-                <FolderOpen size={16} /> Replace
+                <Icon icon={FolderOpen} /> Replace
               </Button>
             ) : (
               <Button onClick={onOpen} disabled={busy}>
-                <FolderOpen size={16} /> Open…
+                <Icon icon={FolderOpen} /> Open…
                 <Kbd className="ml-1">Ctrl O</Kbd>
               </Button>
             )}
@@ -107,7 +108,7 @@ export function Header({
           aria-controls="settings-sidebar"
           onClick={onToggleSidebar}
         >
-          <PanelRight size={16} />
+          <Icon icon={SidebarSimple} mirrored />
         </Button>
       </div>
     </header>

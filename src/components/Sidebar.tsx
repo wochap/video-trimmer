@@ -1,5 +1,6 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
-import { Folder, Scissors } from "lucide-react";
+import { Folder, Scissors } from "@phosphor-icons/react";
+import { Icon } from "@/components/ui/icon";
 import { extension } from "@/lib/output";
 import { formatMicros, parseTimecode } from "@/lib/time";
 import type { ExportFormat, ExportQuality, VideoMetadata } from "@/lib/types";
@@ -251,7 +252,7 @@ export function Sidebar({
                 title="Choose folder"
                 onClick={onChooseFolder}
               >
-                <Folder size={16} />
+                <Icon icon={Folder} />
               </Button>
             </div>
           </Field>
@@ -281,7 +282,7 @@ export function Sidebar({
             disabled={!canTrim}
             onClick={onTrim}
           >
-            <Scissors size={16} /> Trim &amp; save
+            <Icon icon={Scissors} /> Trim &amp; save
           </Button>
         </div>
       </div>

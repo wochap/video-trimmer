@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { Check, FolderOpen, Upload } from "lucide-react";
+import { Check, FolderOpen, UploadSimple } from "@phosphor-icons/react";
+import { Icon } from "@/components/ui/icon";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
@@ -17,7 +18,7 @@ export function EmptyState({ onOpen }: { onOpen: () => void }) {
     <Backdrop>
       <div className="flex w-full max-w-[560px] flex-col items-start gap-3.5 rounded-lg border-[1.5px] border-dashed border-neutral-700 bg-surface/60 px-9 py-10">
         <div className="flex size-[52px] items-center justify-center rounded-md bg-accent-900 text-accent-300 shadow-[0_0_24px_color-mix(in_srgb,var(--color-accent)_25%,transparent)]">
-          <Upload size={28} strokeWidth={1.6} />
+          <Icon icon={UploadSimple} size={28} />
         </div>
         <div className="flex flex-col gap-1.5">
           <h2 className="text-xl leading-tight font-medium">
@@ -29,7 +30,7 @@ export function EmptyState({ onOpen }: { onOpen: () => void }) {
         </div>
         <div className="mt-1.5 flex flex-wrap items-center gap-2.5">
           <Button variant="primary" onClick={onOpen}>
-            <FolderOpen size={16} /> Choose video…
+            <Icon icon={FolderOpen} /> Choose video…
           </Button>
           <span className="flex items-center gap-[5px] text-xs text-neutral-500">
             or press <Kbd>Enter</Kbd> <Kbd>Ctrl O</Kbd>
@@ -72,9 +73,10 @@ export function Inspecting({
                 >
                   <span className="grid size-3.5 place-items-center">
                     {state === "done" ? (
-                      <Check
+                      <Icon
+                        icon={Check}
                         size={13}
-                        strokeWidth={2.2}
+                        weight="bold"
                         className="text-accent-300"
                       />
                     ) : (

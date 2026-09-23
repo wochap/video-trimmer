@@ -37,4 +37,11 @@ Manual checks for export progress details (screen 3d):
 - [ ] `--format copy` on a long source shows `Seek to keyframe at <time>`, then `Copying streams`, then `Finalizing file`; the size reads `<written> of <estimate>` without `≈` and ends close to the estimate.
 - [ ] `--format mp4` shows `Decoding and encoding`, `Validating output`, `Finalizing file`; the size reads `of ≈ <estimate>`; `about N s left` appears only after 5% and does not jump when a VA-API attempt falls back.
 
+Manual checks for Phosphor icons (compare against the mockups at 16px; drop a glyph to 15px if it reads optically larger):
+
+- [ ] Header: `FolderOpen` on Open…/Replace and the mirrored `SidebarSimple` settings toggle align with the button text and do not shift the layout.
+- [ ] Transport: `SkipBack`/`SkipForward` (go to in/out), `CaretLeft`/`CaretRight` (frame step), filled `Play`/`Pause`, and `PlayCircle` (Play selection) match the mockup size.
+- [ ] Sidebar: `Folder` in the destination picker and `Scissors` on Trim & save.
+- [ ] Empty state: 28px `UploadSimple` and `FolderOpen` on Choose video…; inspect and export steps show a 13px bold `Check`.
+
 HDR, 10-bit color, unusual color metadata, and VFR sources are converted to broadly compatible H.264/AAC and may not preserve every source characteristic. MP4 is the only supported input container.

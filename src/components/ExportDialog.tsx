@@ -1,5 +1,6 @@
 import * as A from "@radix-ui/react-alert-dialog";
-import { Check } from "lucide-react";
+import { Check } from "@phosphor-icons/react";
+import { Icon } from "@/components/ui/icon";
 import { useEffect, useState } from "react";
 import { formatBytes, splitPath } from "@/lib/output";
 import { formatMicros, formatRemaining } from "@/lib/time";
@@ -118,9 +119,10 @@ export function ExportDialog({
                 >
                   <span className="grid size-3.5 place-items-center">
                     {state === "done" ? (
-                      <Check
+                      <Icon
+                        icon={Check}
                         size={13}
-                        strokeWidth={2.2}
+                        weight="bold"
                         className="text-accent-300"
                       />
                     ) : (

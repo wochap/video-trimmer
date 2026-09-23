@@ -19,7 +19,7 @@
         npmDeps = pkgs.fetchNpmDeps {
           src = self;
           fetcherVersion = 2;
-          hash = "sha256-zPFuvY/i1lDcmbywy3NYYofKbuhGl8Yr30K9uXcJit4=";
+          hash = "sha256-Nf1BGb13Za4yodrRUBrRxKSlfUClAa+J45+n6iU2Wq4=";
         };
         NIX_NPM_FETCHER_VERSION = "2";
         nativeBuildInputs = [ pkgs.cargo-tauri.hook pkgs.nodejs pkgs.npmHooks.npmConfigHook pkgs.pkg-config pkgs.wrapGAppsHook3 pkgs.ffmpeg-full ];

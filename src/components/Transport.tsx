@@ -1,15 +1,16 @@
 import {
-  ArrowLeftToLine,
-  ArrowRightToLine,
+  CaretLeft,
+  CaretRight,
   Pause,
   Play,
-  SquarePlay,
-  StepBack,
-  StepForward,
-} from "lucide-react";
+  PlayCircle,
+  SkipBack,
+  SkipForward,
+} from "@phosphor-icons/react";
 import { formatMicros } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Icon } from "@/components/ui/icon";
 import { Kbd } from "@/components/ui/kbd";
 // Secondary hints drop out first so the bar fits at the 1280px design width.
 const HINTS: [string[], string, string?][] = [
@@ -61,8 +62,8 @@ export function Transport({
   return (
     <div className="flex h-[52px] shrink-0 items-center gap-1.5 border-t border-divider px-4">
       <div className="flex items-center gap-1.5">
-        {icon("Go to in", onGoToIn, <ArrowLeftToLine size={16} />)}
-        {icon("Previous frame", onPreviousFrame, <StepBack size={16} />)}
+        {icon("Go to in", onGoToIn, <Icon icon={SkipBack} />)}
+        {icon("Previous frame", onPreviousFrame, <Icon icon={CaretLeft} />)}
         <Button
           size="icon"
           variant="primary"
@@ -72,20 +73,20 @@ export function Transport({
           onClick={onToggle}
         >
           {playing ? (
-            <Pause size={16} fill="currentColor" />
+            <Icon icon={Pause} weight="fill" />
           ) : (
-            <Play size={16} fill="currentColor" />
+            <Icon icon={Play} weight="fill" />
           )}
         </Button>
-        {icon("Next frame", onNextFrame, <StepForward size={16} />)}
-        {icon("Go to out", onGoToOut, <ArrowRightToLine size={16} />)}
+        {icon("Next frame", onNextFrame, <Icon icon={CaretRight} />)}
+        {icon("Go to out", onGoToOut, <Icon icon={SkipForward} />)}
         <Button
           variant="ghost"
           className="ml-1 text-[13px]"
           disabled={!enabled}
           onClick={onPlaySelection}
         >
-          <SquarePlay size={16} /> Play selection
+          <Icon icon={PlayCircle} /> Play selection
         </Button>
       </div>
       <div
