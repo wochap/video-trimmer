@@ -36,15 +36,27 @@ The system SHALL, for `mp4` exports, attempt a full VA-API decode/encode path fi
 - **THEN** the system runs exactly one FFmpeg attempt without VA-API options
 
 ### Requirement: Export progress and responsiveness
-The system SHALL parse machine-readable FFmpeg progress, update the UI during export, and keep the application responsive enough to request cancellation.
+The system SHALL parse machine-readable FFmpeg progress, update the UI during export with the processed time, percent complete, bytes written, an estimated final size, an estimated time remaining, and the active pipeline step, and keep the application responsive enough to request cancellation.
 
 #### Scenario: Export advances
 - **WHEN** FFmpeg reports processed output time
-- **THEN** the system displays progress relative to the selected duration without writing progress to application stdout
+- **THEN** the system displays progress relative to the selected duration, the bytes written so far, and a time-remaining estimate, without writing progress to application stdout
 
 #### Scenario: Export fails
 - **WHEN** all configured export paths fail
 - **THEN** the system retains the editor and selection, removes temporary output, and displays a concise error with diagnostic log location
+
+#### Scenario: Copy size estimate
+- **WHEN** the format is `copy`
+- **THEN** the estimated size equals the source bitrate multiplied by the effective duration and is shown before the first progress event
+
+#### Scenario: Re-encode size estimate
+- **WHEN** the format re-encodes
+- **THEN** the estimated size is marked approximate and derived from the tier's nominal bitrate
+
+#### Scenario: Pipeline steps
+- **WHEN** the export moves from encoding to validation to finalization
+- **THEN** the dialog marks the previous step complete and the next step active
 
 ### Requirement: Safe destination handling
 The system MUST render to a uniquely named temporary file in the destination directory and SHALL finalize the destination only after FFmpeg exits successfully and the temporary output passes validation. The destination extension MUST match the effective format (`.mp4` for `mp4` and `copy`, `.webm`, `.gif`). The system MUST refuse a destination that resolves to the source file.
