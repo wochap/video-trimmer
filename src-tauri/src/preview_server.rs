@@ -1,5 +1,5 @@
 use crate::media::MediaState;
-use std::{io::SeekFrom, path::PathBuf, sync::Arc};
+use std::{io::SeekFrom, path::PathBuf, sync::Arc, time::Duration};
 use tauri::Manager;
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
@@ -46,6 +46,7 @@ impl PreviewServer {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_io()
+            .enable_time()
             .build()?;
         let resolver: Arc<dyn MediaResolver> = Arc::new(StateResolver { app });
         let listener = {
@@ -81,65 +82,119 @@ async fn serve(listener: TcpListener, resolver: Arc<dyn MediaResolver>) {
     }
 }
 const MAX_HEADER_BYTES: usize = 8 * 1024;
+const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 struct RequestHead {
     method: String,
     target: String,
     range: Option<String>,
+    keep_alive: bool,
 }
-async fn read_request_head(stream: &mut TcpStream) -> std::io::Result<Option<RequestHead>> {
-    let mut buf = Vec::new();
+enum ReadOutcome {
+    Head(RequestHead),
+    /// The client closed or went idle before starting another request.
+    Closed,
+    Malformed,
+}
+/// Reads one request head; bytes past its end stay in `buf` for the next request.
+async fn read_request_head(
+    stream: &mut TcpStream,
+    buf: &mut Vec<u8>,
+) -> std::io::Result<ReadOutcome> {
     let mut chunk = [0u8; 1024];
     let end = loop {
-        let n = stream.read(&mut chunk).await?;
-        if n == 0 {
-            return Ok(None);
-        }
-        buf.extend_from_slice(&chunk[..n]);
-        if let Some(pos) = find_header_end(&buf) {
+        if let Some(pos) = find_header_end(buf) {
             break pos;
         }
         if buf.len() > MAX_HEADER_BYTES {
-            return Ok(None);
+            return Ok(ReadOutcome::Malformed);
         }
+        let n = match tokio::time::timeout(IDLE_TIMEOUT, stream.read(&mut chunk)).await {
+            Ok(result) => result?,
+            Err(_) => return Ok(ReadOutcome::Closed),
+        };
+        if n == 0 {
+            return Ok(if buf.is_empty() {
+                ReadOutcome::Closed
+            } else {
+                ReadOutcome::Malformed
+            });
+        }
+        buf.extend_from_slice(&chunk[..n]);
     };
-    let text = String::from_utf8_lossy(&buf[..end]);
+    let text = String::from_utf8_lossy(&buf[..end]).into_owned();
+    buf.drain(..end + 4);
     let mut lines = text.lines();
     let Some(request_line) = lines.next() else {
-        return Ok(None);
+        return Ok(ReadOutcome::Malformed);
     };
     let mut parts = request_line.split_whitespace();
-    let (Some(method), Some(target), _) = (parts.next(), parts.next(), parts.next()) else {
-        return Ok(None);
+    let (Some(method), Some(target), version) = (parts.next(), parts.next(), parts.next()) else {
+        return Ok(ReadOutcome::Malformed);
     };
+    // HTTP/1.1 keeps connections open by default; HTTP/1.0 closes them.
+    let mut keep_alive = version != Some("HTTP/1.0");
     let mut range = None;
     for line in lines {
-        if let Some(value) = line
-            .strip_prefix("Range:")
-            .or_else(|| line.strip_prefix("range:"))
-        {
-            range = Some(value.trim().to_string());
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        if name.eq_ignore_ascii_case("range") {
+            range = Some(value.to_string());
+        } else if name.eq_ignore_ascii_case("connection") {
+            for token in value.split(',').map(str::trim) {
+                if token.eq_ignore_ascii_case("close") {
+                    keep_alive = false;
+                } else if token.eq_ignore_ascii_case("keep-alive") {
+                    keep_alive = true;
+                }
+            }
         }
     }
-    Ok(Some(RequestHead {
+    Ok(ReadOutcome::Head(RequestHead {
         method: method.to_ascii_uppercase(),
         target: target.to_owned(),
         range,
+        keep_alive,
     }))
 }
 fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n")
 }
+fn connection_header(keep_alive: bool) -> &'static str {
+    if keep_alive {
+        "keep-alive"
+    } else {
+        "close"
+    }
+}
 async fn handle_connection(
     mut stream: TcpStream,
     resolver: &dyn MediaResolver,
 ) -> std::io::Result<()> {
-    let Some(head) = read_request_head(&mut stream).await? else {
-        return write_error(&mut stream, 400, "Bad Request").await;
-    };
-    let include_body = head.method == "GET";
-    if head.method != "GET" && head.method != "HEAD" {
-        return write_error(&mut stream, 405, "Method Not Allowed").await;
+    let mut buf = Vec::new();
+    loop {
+        let head = match read_request_head(&mut stream, &mut buf).await? {
+            ReadOutcome::Head(head) => head,
+            ReadOutcome::Closed => return Ok(()),
+            ReadOutcome::Malformed => {
+                return write_error(&mut stream, 400, "Bad Request", false).await
+            }
+        };
+        if head.method != "GET" && head.method != "HEAD" {
+            return write_error(&mut stream, 405, "Method Not Allowed", false).await;
+        }
+        respond(&mut stream, resolver, &head).await?;
+        if !head.keep_alive {
+            return Ok(());
+        }
     }
+}
+async fn respond(
+    stream: &mut TcpStream,
+    resolver: &dyn MediaResolver,
+    head: &RequestHead,
+) -> std::io::Result<()> {
     let path = if head.target == "/media" {
         resolver.media()
     } else if let Some(index) = head
@@ -152,9 +207,16 @@ async fn handle_connection(
         None
     };
     let Some(path) = path else {
-        return write_error(&mut stream, 404, "Not Found").await;
+        return write_error(stream, 404, "Not Found", head.keep_alive).await;
     };
-    serve_file(&mut stream, &path, head.range.as_deref(), include_body).await
+    serve_file(
+        stream,
+        &path,
+        head.range.as_deref(),
+        head.method == "GET",
+        head.keep_alive,
+    )
+    .await
 }
 enum RangeSpec {
     Full,
@@ -207,10 +269,12 @@ async fn serve_file(
     path: &std::path::Path,
     range_header: Option<&str>,
     include_body: bool,
+    keep_alive: bool,
 ) -> std::io::Result<()> {
+    let connection = connection_header(keep_alive);
     let mut file = match tokio::fs::File::open(path).await {
         Ok(v) => v,
-        Err(_) => return write_error(stream, 404, "Not Found").await,
+        Err(_) => return write_error(stream, 404, "Not Found", keep_alive).await,
     };
     let len = file.metadata().await?.len();
     let (status, start, end) = match parse_range(range_header, len) {
@@ -218,9 +282,10 @@ async fn serve_file(
         RangeSpec::Slice(start, end) => (206, start, end),
         RangeSpec::Unsatisfiable => {
             let head = format!(
-                "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{len}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+                "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{len}\r\nConnection: {connection}\r\nContent-Length: 0\r\n\r\n"
             );
-            return stream.write_all(head.as_bytes()).await;
+            stream.write_all(head.as_bytes()).await?;
+            return stream.flush().await;
         }
     };
     let nbytes = if len == 0 { 0 } else { end + 1 - start };
@@ -230,7 +295,7 @@ async fn serve_file(
         "OK"
     };
     let mut head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {}\r\nAccept-Ranges: bytes\r\nContent-Length: {nbytes}\r\nConnection: close\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {}\r\nAccept-Ranges: bytes\r\nContent-Length: {nbytes}\r\nConnection: {connection}\r\n",
         content_type(path)
     );
     if status == 206 {
@@ -248,18 +313,25 @@ async fn serve_file(
         let want = (remaining as usize).min(chunk.len());
         let n = file.read(&mut chunk[..want]).await?;
         if n == 0 {
-            break;
+            // A short body breaks keep-alive framing, so end the connection.
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
         }
         stream.write_all(&chunk[..n]).await?;
         remaining -= n as u64;
     }
     stream.flush().await
 }
-async fn write_error(stream: &mut TcpStream, status: u16, reason: &str) -> std::io::Result<()> {
+async fn write_error(
+    stream: &mut TcpStream,
+    status: u16,
+    reason: &str,
+    keep_alive: bool,
+) -> std::io::Result<()> {
     let body = format!("{status} {reason}\n");
     let head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: {}\r\n\r\n",
+        body.len(),
+        connection_header(keep_alive)
     );
     stream.write_all(head.as_bytes()).await?;
     stream.write_all(body.as_bytes()).await?;
@@ -291,19 +363,49 @@ mod tests {
         tokio::spawn(serve(listener, resolver));
         addr
     }
-    async fn raw_request(addr: std::net::SocketAddr, request: &str) -> (u16, String, Vec<u8>) {
-        let mut stream = TokioStream::connect(addr).await.unwrap();
-        stream.write_all(request.as_bytes()).await.unwrap();
-        let mut buf = Vec::new();
-        stream.read_to_end(&mut buf).await.unwrap();
-        let end = find_header_end(&buf).expect("response head terminator");
+    /// Reads one response, using `Content-Length` to find its end so that a
+    /// kept-open connection does not block.
+    async fn read_response(
+        stream: &mut TokioStream,
+        buf: &mut Vec<u8>,
+        head_request: bool,
+    ) -> (u16, String, Vec<u8>) {
+        let mut chunk = [0u8; 1024];
+        let end = loop {
+            if let Some(end) = find_header_end(buf) {
+                break end;
+            }
+            let n = stream.read(&mut chunk).await.unwrap();
+            assert!(n > 0, "connection closed before the response head");
+            buf.extend_from_slice(&chunk[..n]);
+        };
         let head = String::from_utf8_lossy(&buf[..end]).into_owned();
         let status = head
             .split_whitespace()
             .nth(1)
             .and_then(|v| v.parse::<u16>().ok())
             .unwrap_or(0);
-        (status, head, buf[end + 4..].to_vec())
+        let len = if head_request {
+            0
+        } else {
+            head.lines()
+                .find_map(|line| line.strip_prefix("Content-Length:"))
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .unwrap_or(0)
+        };
+        while buf.len() < end + 4 + len {
+            let n = stream.read(&mut chunk).await.unwrap();
+            assert!(n > 0, "connection closed before the response body");
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        let body = buf[end + 4..end + 4 + len].to_vec();
+        buf.drain(..end + 4 + len);
+        (status, head, body)
+    }
+    async fn raw_request(addr: std::net::SocketAddr, request: &str) -> (u16, String, Vec<u8>) {
+        let mut stream = TokioStream::connect(addr).await.unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
+        read_response(&mut stream, &mut Vec::new(), request.starts_with("HEAD")).await
     }
     fn write_media(dir: &std::path::Path) -> PathBuf {
         let path = dir.join("media.mp4");
@@ -402,6 +504,67 @@ mod tests {
         assert_eq!(status, 200);
         assert!(head.contains("Content-Length: 16"));
         assert!(body.is_empty());
+    }
+    #[tokio::test]
+    async fn sequential_range_requests_share_one_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let addr = start_server(Some(write_media(dir.path())), vec![]).await;
+        let mut stream = TokioStream::connect(addr).await.unwrap();
+        let mut buf = Vec::new();
+        stream
+            .write_all(b"GET /media HTTP/1.1\r\nHost: localhost\r\nRange: bytes=0-1\r\n\r\n")
+            .await
+            .unwrap();
+        let (status, head, body) = read_response(&mut stream, &mut buf, false).await;
+        assert_eq!(status, 206);
+        assert!(head.contains("Connection: keep-alive"));
+        assert_eq!(body, b"01");
+        stream
+            .write_all(b"GET /media HTTP/1.1\r\nHost: localhost\r\nRange: bytes=10-\r\n\r\n")
+            .await
+            .unwrap();
+        let (status, head, body) = read_response(&mut stream, &mut buf, false).await;
+        assert_eq!(status, 206);
+        assert!(head.contains("Content-Range: bytes 10-15/16"));
+        assert_eq!(body, b"abcdef");
+    }
+    #[tokio::test]
+    async fn pipelined_requests_are_answered_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let addr = start_server(Some(write_media(dir.path())), vec![]).await;
+        let mut stream = TokioStream::connect(addr).await.unwrap();
+        let mut buf = Vec::new();
+        stream
+            .write_all(
+                b"GET /media HTTP/1.1\r\nRange: bytes=0-1\r\n\r\nGET /media HTTP/1.1\r\nRange: bytes=2-3\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let (_, _, body) = read_response(&mut stream, &mut buf, false).await;
+        assert_eq!(body, b"01");
+        let (status, _, body) = read_response(&mut stream, &mut buf, false).await;
+        assert_eq!(status, 206);
+        assert_eq!(body, b"23");
+    }
+    #[tokio::test]
+    async fn connection_close_ends_the_connection_after_the_response() {
+        let dir = tempfile::tempdir().unwrap();
+        let addr = start_server(Some(write_media(dir.path())), vec![]).await;
+        let mut stream = TokioStream::connect(addr).await.unwrap();
+        stream
+            .write_all(b"GET /media HTTP/1.1\r\nConnection: Close\r\nRange: bytes=0-1\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut buf))
+            .await
+            .expect("server closes the connection")
+            .unwrap();
+        let end = find_header_end(&buf).unwrap();
+        let head = String::from_utf8_lossy(&buf[..end]);
+        assert!(head.starts_with("HTTP/1.1 206"));
+        assert!(head.contains("Connection: close"));
+        assert_eq!(&buf[end + 4..], b"01");
     }
     #[test]
     fn range_parser_covers_gstreamer_patterns() {

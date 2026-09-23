@@ -88,7 +88,11 @@ export function useTrimmer() {
     launchOutput = useRef<string | null>(null),
     boundedStop = useRef<number | null>(null),
     boundedVersion = useRef(0),
-    boundedSeekTarget = useRef<number | null>(null);
+    boundedSeekTarget = useRef<number | null>(null),
+    // At most one media seek runs at a time; the newest request waits in
+    // `pendingSeek` and is applied on `seeked`.
+    seekInFlight = useRef(false),
+    pendingSeek = useRef<number | null>(null);
   const step = frameStepMicros(video?.frameRate ?? 30);
   const outputPath =
     video && outputStem.trim()
@@ -235,13 +239,28 @@ export function useTrimmer() {
     const id = window.setInterval(refresh, 2000);
     return () => window.clearInterval(id);
   }, [previewOk]);
+  const resetSeeks = () => {
+    seekInFlight.current = false;
+    pendingSeek.current = null;
+  };
+  useEffect(resetSeeks, [video?.previewUrl]);
+  /** Seeks the media now, replacing any queued seek. */
+  const applySeek = (el: HTMLVideoElement, micros: number) => {
+    pendingSeek.current = null;
+    el.currentTime = microsToSeconds(micros);
+    // Without metadata the browser stores the position and fires no `seeked`.
+    seekInFlight.current = el.readyState >= el.HAVE_METADATA;
+  };
   const seek = (v: number) => {
     boundedStop.current = null;
     boundedSeekTarget.current = null;
     boundedVersion.current += 1;
     const n = Math.max(0, Math.min(v, video?.durationMicros ?? 0));
     setPlayhead(n);
-    if (player.current) player.current.currentTime = microsToSeconds(n);
+    const el = player.current;
+    if (!el) return;
+    if (seekInFlight.current) pendingSeek.current = n;
+    else applySeek(el, n);
   };
   const range = (s: number, e: number, boundary?: "start" | "end") => {
     if (!video) return;
@@ -263,7 +282,7 @@ export function useTrimmer() {
     boundedVersion.current += 1;
     const version = boundedVersion.current;
     boundedSeekTarget.current = intervalStart;
-    el.currentTime = microsToSeconds(intervalStart);
+    applySeek(el, intervalStart);
     setPlayhead(intervalStart);
     boundedStop.current = intervalEnd;
     void el.play().catch(() => {
@@ -277,7 +296,7 @@ export function useTrimmer() {
     boundedSeekTarget.current = stop;
     boundedVersion.current += 1;
     el.pause();
-    el.currentTime = microsToSeconds(stop);
+    applySeek(el, stop);
     setPlayhead(stop);
     return true;
   };
@@ -396,6 +415,7 @@ export function useTrimmer() {
     onLoadedMetadata: () => setPreviewOk(true),
     onError: () => {
       clearBounded();
+      resetSeeks();
       setPreviewOk(false);
       setError(
         "This MP4 was inspected successfully, but WebKit/GStreamer cannot preview it.",
@@ -410,7 +430,15 @@ export function useTrimmer() {
       const target = boundedSeekTarget.current;
       if (target === null || Math.abs(current - target) > step) clearBounded();
     },
-    onSeeked: () => {
+    onSeeked: (e: { currentTarget: HTMLVideoElement }) => {
+      const el = e.currentTarget;
+      const next = pendingSeek.current;
+      if (next !== null && secondsToMicros(el.currentTime) !== next) {
+        applySeek(el, next);
+        return;
+      }
+      pendingSeek.current = null;
+      seekInFlight.current = false;
       boundedSeekTarget.current = null;
     },
     onPlay: () => setPlaying(true),

@@ -634,6 +634,96 @@ describe("transport", () => {
     expect(endHandle).toHaveAttribute("aria-valuenow", "1500000");
   });
 });
+/** Makes the element report loaded media and counts `currentTime` writes. */
+function seekable(video: HTMLVideoElement) {
+  const proto = Object.getOwnPropertyDescriptor(
+    HTMLMediaElement.prototype,
+    "currentTime",
+  )!;
+  const writes: number[] = [];
+  Object.defineProperty(video, "readyState", {
+    configurable: true,
+    get: () => HTMLMediaElement.HAVE_ENOUGH_DATA,
+  });
+  Object.defineProperty(video, "currentTime", {
+    configurable: true,
+    get() {
+      return proto.get!.call(this);
+    },
+    set(v: number) {
+      writes.push(v);
+      proto.set!.call(this, v);
+    },
+  });
+  return writes;
+}
+function mockTrack(el: HTMLElement) {
+  vi.spyOn(el, "getBoundingClientRect").mockReturnValue({
+    left: 0,
+    width: 100,
+    right: 100,
+    top: 0,
+    bottom: 80,
+    height: 80,
+    x: 0,
+    y: 0,
+    toJSON: () => ({}),
+  });
+}
+describe("seeking", () => {
+  const timelineTrack = () => {
+    const track = screen.getByRole("slider", {
+      name: "Trim start",
+    }).parentElement!;
+    mockTrack(track);
+    return track;
+  };
+  it("coalesces a timeline drag into at most two seeks ending on the pointer", async () => {
+    const video = await ready();
+    const writes = seekable(video);
+    const track = timelineTrack();
+    fireEvent.pointerDown(track, { clientX: 10, buttons: 1 });
+    for (const x of [20, 30, 40])
+      fireEvent.pointerMove(track, { clientX: x, buttons: 1 });
+    expect(screen.getByLabelText("Playhead")).toHaveTextContent(
+      "0:00.800 / 0:02.000",
+    );
+    expect(writes).toEqual([0.2]);
+    fireEvent.seeking(video);
+    fireEvent.seeked(video);
+    expect(writes).toEqual([0.2, 0.8]);
+    fireEvent.seeking(video);
+    fireEvent.seeked(video);
+    expect(video.currentTime).toBeCloseTo(0.8);
+    expect(writes).toHaveLength(2);
+  });
+  it("seeks once for a single timeline click", async () => {
+    const video = await ready();
+    const writes = seekable(video);
+    fireEvent.pointerDown(timelineTrack(), { clientX: 50, buttons: 1 });
+    fireEvent.seeking(video);
+    fireEvent.seeked(video);
+    expect(writes).toEqual([1]);
+  });
+  it("ends a trim handle drag on the boundary's final frame", async () => {
+    const video = await ready();
+    const writes = seekable(video);
+    const startHandle = screen.getByRole("slider", { name: "Trim start" });
+    mockTrack(startHandle.parentElement!);
+    fireEvent.pointerDown(startHandle, { clientX: 10, pointerId: 1 });
+    for (const x of [20, 30])
+      fireEvent.pointerMove(startHandle, {
+        clientX: x,
+        pointerId: 1,
+        buttons: 1,
+      });
+    expect(startHandle).toHaveAttribute("aria-valuenow", "600000");
+    fireEvent.seeking(video);
+    fireEvent.seeked(video);
+    expect(writes).toHaveLength(2);
+    expect(video.currentTime).toBeCloseTo(0.6);
+  });
+});
 describe("footer status", () => {
   it("describes re-encoding and copy from the preceding keyframe", async () => {
     await ready({
