@@ -1,7 +1,9 @@
 import type { ReactNode } from "react";
-import { FolderOpen, Upload } from "lucide-react";
+import { Check, FolderOpen, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
+import { cn } from "@/lib/utils";
+import { INSPECT_STEPS, type InspectStep } from "@/lib/types";
 function Backdrop({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center bg-[radial-gradient(ellipse_at_50%_40%,var(--color-surface),var(--color-bg)_70%)] p-5">
@@ -37,19 +39,72 @@ export function EmptyState({ onOpen }: { onOpen: () => void }) {
     </Backdrop>
   );
 }
-/** Screen 3b: the chosen file is being probed. */
-export function Inspecting() {
+/** Screen 3b: the chosen file is being probed; `step` is the active step. */
+export function Inspecting({
+  step,
+  fraction,
+}: {
+  step: InspectStep | null;
+  fraction: number;
+}) {
+  const active = step ? INSPECT_STEPS.indexOf(step) : 0;
+  const percent = Math.round(Math.max(0, Math.min(1, fraction)) * 100);
   return (
     <Backdrop>
       <div className="box-border flex aspect-video h-full max-w-full items-end rounded-sm bg-linear-to-b from-neutral-800 to-neutral-900 p-6 shadow-sm">
         <div className="flex w-full max-w-[340px] flex-col gap-2.5">
           <p className="text-[15px] font-medium">Inspecting video…</p>
+          <ol aria-label="Inspection steps" className="flex flex-col gap-1.5">
+            {INSPECT_STEPS.map((name, i) => {
+              const state =
+                i < active ? "done" : i === active ? "active" : "pending";
+              return (
+                <li
+                  key={name}
+                  data-state={state}
+                  aria-current={state === "active" ? "step" : undefined}
+                  className={cn(
+                    "flex items-center gap-2 text-[12.5px]",
+                    state === "done" && "text-neutral-400",
+                    state === "active" && "text-text",
+                    state === "pending" && "text-neutral-600",
+                  )}
+                >
+                  <span className="grid size-3.5 place-items-center">
+                    {state === "done" ? (
+                      <Check
+                        size={13}
+                        strokeWidth={2.2}
+                        className="text-accent-300"
+                      />
+                    ) : (
+                      <span
+                        className={cn(
+                          "size-1.5 rounded-full",
+                          state === "active"
+                            ? "bg-accent shadow-[0_0_8px_var(--color-accent)]"
+                            : "bg-neutral-700",
+                        )}
+                      />
+                    )}
+                  </span>
+                  {name}
+                </li>
+              );
+            })}
+          </ol>
           <div
             role="progressbar"
             aria-label="Inspecting video"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={percent}
             className="relative h-[3px] overflow-hidden rounded-xs bg-neutral-700"
           >
-            <div className="absolute inset-y-0 left-0 w-[38%] animate-[inspect_1.4s_ease-in-out_infinite] rounded-xs bg-accent shadow-[0_0_10px_var(--color-accent)]" />
+            <div
+              className="absolute inset-y-0 left-0 rounded-xs bg-accent shadow-[0_0_10px_var(--color-accent)] transition-[width]"
+              style={{ width: `${percent}%` }}
+            />
           </div>
         </div>
       </div>

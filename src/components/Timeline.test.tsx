@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { rulerTicks, Timeline } from "./Timeline";
+import { rulerTicks, ThumbnailStrip, Timeline } from "./Timeline";
 describe("Timeline", () => {
   it("exposes independent labelled sliders", () => {
     render(
@@ -176,5 +176,17 @@ describe("adaptive ruler", () => {
       "4:00",
     ]);
     expect(rulerTicks(240_000_000).minors).toHaveLength(16);
+  });
+  it("fills the inspecting strip left to right with placeholders", () => {
+    const thumbnails = Array.from({ length: 14 }, (_, i) =>
+      i < 5 ? `asset://frame-${i}.jpg` : null,
+    );
+    render(<ThumbnailStrip thumbnails={thumbnails} />);
+    const strip = screen.getByTestId("timeline-placeholder");
+    const cells = Array.from(strip.children);
+    expect(cells).toHaveLength(14);
+    expect(strip.querySelectorAll("img")).toHaveLength(5);
+    expect(screen.getAllByTestId("thumbnail-placeholder")).toHaveLength(9);
+    expect(cells.slice(0, 5).every((c) => c.tagName === "IMG")).toBe(true);
   });
 });

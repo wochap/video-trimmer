@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { backend } from "@/lib/backend";
 import { defaultOutput, joinOutput, splitOutput } from "@/lib/output";
 import {
@@ -15,10 +16,20 @@ import type {
   ExportFormat,
   ExportProgress,
   ExportQuality,
+  InspectProgress,
+  InspectStep,
+  InspectThumbnail,
   LaunchOptions,
   VideoMetadata,
 } from "@/lib/types";
 export type Phase = "empty" | "loading" | "ready" | "exporting" | "error";
+/** Advisory inspection state; `thumbnails` holds `null` for cells not yet written. */
+export interface Inspection {
+  step: InspectStep | null;
+  fraction: number;
+  thumbnails: (string | null)[];
+}
+const NO_INSPECTION: Inspection = { step: null, fraction: 0, thumbnails: [] };
 const mp4 = (p: string) => p.toLowerCase().endsWith(".mp4");
 // Export records replace earlier export records but keep playback ones.
 const withExport = (
@@ -55,6 +66,7 @@ export function useTrimmer() {
     [playing, setPlaying] = useState(false),
     [previewOk, setPreviewOk] = useState(false),
     [progress, setProgress] = useState<ExportProgress | null>(null),
+    [inspection, setInspection] = useState<Inspection>(NO_INSPECTION),
     [confirm, setConfirm] = useState(false),
     [launch, setLaunch] = useState<LaunchOptions>({
       input: null,
@@ -68,6 +80,10 @@ export function useTrimmer() {
   const player = useRef<HTMLVideoElement>(null),
     cancelRequested = useRef(false),
     launchRequested = useRef(false),
+    // Inspection events carry the id of the load that produced them; only the
+    // active load may update state, so a replaced load can never leak in.
+    loadCounter = useRef(0),
+    activeLoad = useRef(0),
     // `--output` names only the first loaded input; replacements derive their own.
     launchOutput = useRef<string | null>(null),
     boundedStop = useRef<number | null>(null),
@@ -89,12 +105,17 @@ export function useTrimmer() {
       boundedStop.current = null;
       boundedSeekTarget.current = null;
       boundedVersion.current += 1;
+      const id = ++loadCounter.current;
+      activeLoad.current = id;
+      setInspection(NO_INSPECTION);
       setPhase("loading");
       setPendingPath(path);
       setError("");
       setSavedPath("");
       try {
-        const next = await backend.loadInput(path);
+        const next = await backend.loadInput(path, id);
+        if (activeLoad.current !== id) return;
+        activeLoad.current = 0;
         const out = launchOutput.current
           ? splitOutput(launchOutput.current)
           : defaultOutput(next.path);
@@ -109,10 +130,12 @@ export function useTrimmer() {
         setAcceleration(next.playbackAcceleration);
         setPhase("ready");
       } catch (e) {
+        if (activeLoad.current !== id) return;
+        activeLoad.current = 0;
         setError(errorMessage(e));
         setPhase(video ? "ready" : "error");
       } finally {
-        setPendingPath("");
+        if (loadCounter.current === id) setPendingPath("");
       }
     },
     [phase, video],
@@ -177,6 +200,21 @@ export function useTrimmer() {
       listen<AccelerationRecord[]>("acceleration-update", (e) =>
         setAcceleration((previous) => withExport(previous, e.payload)),
       ),
+      listen<InspectProgress>("inspect-progress", ({ payload: p }) => {
+        if (p.loadId !== activeLoad.current) return;
+        setInspection((s) => ({ ...s, step: p.step, fraction: p.fraction }));
+      }),
+      listen<InspectThumbnail>("inspect-thumbnail", ({ payload: t }) => {
+        if (t.loadId !== activeLoad.current) return;
+        setInspection((s) => {
+          const thumbnails = Array.from(
+            { length: t.count },
+            (_, i) => s.thumbnails[i] ?? null,
+          );
+          thumbnails[t.index] = convertFileSrc(t.path);
+          return { ...s, thumbnails };
+        });
+      }),
     ];
     return () => {
       for (const p of stops) void p.then((u) => u());
@@ -420,6 +458,7 @@ export function useTrimmer() {
     playing,
     previewOk,
     progress,
+    inspection,
     confirm,
     setConfirm,
     launch,

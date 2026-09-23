@@ -54,6 +54,40 @@ export function rulerTicks(duration: number) {
   }
   return { majors, minors };
 }
+const PLACEHOLDER_FRAMES = 9;
+/** Inspecting strip: written thumbnails fill left to right, the rest stay placeholders. */
+export function ThumbnailStrip({
+  thumbnails,
+}: {
+  thumbnails: (string | null)[];
+}) {
+  const cells = thumbnails.length
+    ? thumbnails
+    : Array<null>(PLACEHOLDER_FRAMES).fill(null);
+  return (
+    <div
+      data-testid="timeline-placeholder"
+      className="flex h-[84px] gap-0.5 overflow-hidden rounded-md"
+    >
+      {cells.map((src, i) =>
+        src ? (
+          <img
+            key={i}
+            src={src}
+            alt=""
+            className="h-full min-w-0 flex-1 object-cover"
+          />
+        ) : (
+          <div
+            key={i}
+            data-testid="thumbnail-placeholder"
+            className="flex-1 bg-neutral-800"
+          />
+        ),
+      )}
+    </div>
+  );
+}
 export function Timeline({
   duration,
   start,

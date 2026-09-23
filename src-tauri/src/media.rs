@@ -8,12 +8,16 @@ use std::{
     fs::{self, File},
     path::{Path, PathBuf},
     process::Command,
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
 };
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 #[derive(Default)]
 pub struct MediaState {
     pub current: Mutex<Option<CurrentMedia>>,
+    pub latest_load: AtomicU64,
 }
 pub struct CurrentMedia {
     pub preview: PathBuf,
@@ -93,6 +97,7 @@ fn parse_rate(s: Option<&str>) -> f64 {
         30.0
     }
 }
+#[cfg(test)]
 pub fn probe(path: &Path) -> Result<VideoMetadata, AppError> {
     let mut metadata = inspect(path, true)?;
     metadata.keyframes_micros = keyframes(path).unwrap_or_else(|e| {
@@ -212,20 +217,47 @@ fn inspect(path: &Path, require_mp4: bool) -> Result<VideoMetadata, AppError> {
         keyframes_micros: vec![],
     })
 }
-fn thumbnails(path: &Path, duration: u64) -> Result<(PathBuf, Vec<String>), String> {
-    let root = ProjectDirs::from("com", "wochap", "video-trimmer")
-        .ok_or("cannot resolve cache directory")?
-        .cache_dir()
-        .join(format!("preview-{}", std::process::id()));
-    if root.exists() {
-        fs::remove_dir_all(&root).map_err(|e| e.to_string())?
-    }
-    fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-    let count = 12u64.min((duration / 1_000_000).max(1));
+pub const THUMBNAIL_COUNT: u64 = 14;
+fn thumbnail_count(duration: u64) -> u64 {
+    THUMBNAIL_COUNT.min((duration / 1_000_000).max(1))
+}
+// One FFmpeg spawn per timestamp so each frame can be reported as soon as it
+// exists; `-ss` before `-i` keeps every seek cheap on long files.
+fn thumbnails_per_file(
+    path: &Path,
+    duration: u64,
+    dir: &Path,
+    on_file: &mut dyn FnMut(usize, usize, &Path),
+) -> Result<Vec<String>, String> {
+    let count = thumbnail_count(duration) as usize;
     let interval = duration as f64 / 1_000_000.0 / count as f64;
-    let pattern = root.join("frame-%02d.jpg");
+    let mut files = Vec::with_capacity(count);
+    for index in 0..count {
+        let file = dir.join(format!("frame-{:02}.jpg", index + 1));
+        let status = Command::new("ffmpeg")
+            .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-ss"])
+            .arg(format!("{:.6}", interval * (index as f64 + 0.5)))
+            .arg("-i")
+            .arg(path)
+            .args(["-frames:v", "1", "-vf", "scale=240:-2", "-q:v", "4", "-y"])
+            .arg(&file)
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !status.success() || !file.is_file() {
+            return Err(format!("FFmpeg could not write thumbnail {}", index + 1));
+        }
+        on_file(index, count, &file);
+        files.push(file.to_string_lossy().into_owned());
+    }
+    Ok(files)
+}
+// Single-invocation fallback used when per-file generation fails.
+fn thumbnails_batch(path: &Path, duration: u64, dir: &Path) -> Result<Vec<String>, String> {
+    let count = thumbnail_count(duration);
+    let interval = duration as f64 / 1_000_000.0 / count as f64;
+    let pattern = dir.join("frame-%02d.jpg");
     let status = Command::new("ffmpeg")
-        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-i"])
         .arg(path)
         .args([
             "-vf",
@@ -240,16 +272,41 @@ fn thumbnails(path: &Path, duration: u64) -> Result<(PathBuf, Vec<String>), Stri
         .status()
         .map_err(|e| e.to_string())?;
     if !status.success() {
-        let _ = fs::remove_dir_all(&root);
         return Err("FFmpeg could not generate timeline thumbnails".into());
     }
-    let mut files = fs::read_dir(&root)
+    let mut files = fs::read_dir(dir)
         .map_err(|e| e.to_string())?
         .flatten()
         .map(|e| e.path().to_string_lossy().into_owned())
         .collect::<Vec<_>>();
     files.sort();
-    Ok((root, files))
+    Ok(files)
+}
+fn thumbnails(
+    path: &Path,
+    duration: u64,
+    dir: &Path,
+    on_file: &mut dyn FnMut(usize, usize, &Path),
+) -> Result<Vec<String>, String> {
+    if dir.exists() {
+        fs::remove_dir_all(dir).map_err(|e| e.to_string())?
+    }
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    match thumbnails_per_file(path, duration, dir, on_file) {
+        Ok(files) => Ok(files),
+        Err(e) => {
+            tracing::warn!(reason = %e, "per-file thumbnails failed; using the batch path");
+            let _ = fs::remove_dir_all(dir);
+            fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            let files = thumbnails_batch(path, duration, dir).inspect_err(|_| {
+                let _ = fs::remove_dir_all(dir);
+            })?;
+            for (index, file) in files.iter().enumerate() {
+                on_file(index, files.len(), Path::new(file));
+            }
+            Ok(files)
+        }
+    }
 }
 // Source MP4s often carry sparse keyframes, invalid H.264 levels, or VUI
 // timing that GStreamer's h264parse rejects, all of which make WebKitGTK
@@ -303,51 +360,145 @@ fn preview_proxy(input: &Path, duration_micros: u64, dir: &Path) -> Result<PathB
     }
     Ok(proxy)
 }
+pub const STEP_CONTAINER: &str = "Reading container";
+pub const STEP_KEYFRAMES: &str = "Indexing keyframes";
+pub const STEP_PREVIEW: &str = "Building preview";
+pub const STEP_THUMBNAILS: &str = "Building thumbnails";
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectProgress {
+    pub load_id: u64,
+    pub step: &'static str,
+    pub fraction: f64,
+}
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectThumbnail {
+    pub load_id: u64,
+    pub index: usize,
+    pub count: usize,
+    pub path: String,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub enum InspectEvent {
+    Progress(InspectProgress),
+    Thumbnail(InspectThumbnail),
+}
+pub struct Inspected {
+    pub metadata: VideoMetadata,
+    pub preview: PathBuf,
+    pub cache: PathBuf,
+    pub thumbnails: Vec<PathBuf>,
+}
+fn cache_dir(load_id: u64) -> PathBuf {
+    ProjectDirs::from("com", "wochap", "video-trimmer")
+        .map(|p| p.cache_dir().to_path_buf())
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("preview-{}-{load_id}", std::process::id()))
+}
+// Runs the inspection steps in the order the editor lists them. Step weights
+// are probe 0.1, keyframes 0.2, preview 0.5, thumbnails 0.2; the thumbnail
+// step advances per written file. Only the probe is fatal.
+pub fn inspect_input(
+    canonical: &Path,
+    load_id: u64,
+    cache: &Path,
+    emit: &mut dyn FnMut(InspectEvent),
+) -> Result<Inspected, AppError> {
+    let mut progress = |step, fraction| {
+        emit(InspectEvent::Progress(InspectProgress {
+            load_id,
+            step,
+            fraction,
+        }))
+    };
+    progress(STEP_CONTAINER, 0.0);
+    let mut metadata = inspect(canonical, true)?;
+    progress(STEP_KEYFRAMES, 0.1);
+    metadata.keyframes_micros = keyframes(canonical).unwrap_or_else(|e| {
+        tracing::warn!(path = %canonical.display(), reason = %e, "keyframe index unavailable");
+        vec![]
+    });
+    progress(STEP_PREVIEW, 0.3);
+    let _ = fs::remove_dir_all(cache);
+    let preview = preview_proxy(canonical, metadata.duration_micros, cache).unwrap_or_else(|e| {
+        tracing::warn!(reason = %e, "preview proxy unavailable; serving the original file");
+        canonical.to_path_buf()
+    });
+    progress(STEP_THUMBNAILS, 0.8);
+    let generated = thumbnails(
+        canonical,
+        metadata.duration_micros,
+        &cache.join("thumbs"),
+        &mut |index, count, file| {
+            emit(InspectEvent::Thumbnail(InspectThumbnail {
+                load_id,
+                index,
+                count,
+                path: file.to_string_lossy().into_owned(),
+            }));
+            emit(InspectEvent::Progress(InspectProgress {
+                load_id,
+                step: STEP_THUMBNAILS,
+                fraction: 0.8 + 0.2 * (index + 1) as f64 / count as f64,
+            }));
+        },
+    );
+    metadata.thumbnails = generated.unwrap_or_else(|e| {
+        metadata.thumbnail_warning = Some(e);
+        vec![]
+    });
+    Ok(Inspected {
+        thumbnails: metadata.thumbnails.iter().map(PathBuf::from).collect(),
+        metadata,
+        preview,
+        cache: cache.to_path_buf(),
+    })
+}
 #[tauri::command]
 pub async fn load_input(
     app: tauri::AppHandle,
     state: tauri::State<'_, MediaState>,
     preview: tauri::State<'_, crate::preview_server::PreviewServer>,
     path: String,
+    load_id: u64,
 ) -> Result<VideoMetadata, AppError> {
     let canonical = validate_input(Path::new(&path))?;
-    let mut metadata = probe(&canonical)?;
-    let generated = thumbnails(&canonical, metadata.duration_micros);
-    let (cache, files) = match generated {
-        Ok(v) => v,
-        Err(e) => {
-            metadata.thumbnail_warning = Some(e);
-            let fallback = ProjectDirs::from("com", "wochap", "video-trimmer")
-                .map(|p| {
-                    p.cache_dir()
-                        .join(format!("preview-{}", std::process::id()))
-                })
-                .unwrap_or_default();
-            (fallback, vec![])
+    state.latest_load.fetch_max(load_id, Ordering::SeqCst);
+    let cache = cache_dir(load_id);
+    let inspected = inspect_input(&canonical, load_id, &cache, &mut |event| match event {
+        InspectEvent::Progress(p) => {
+            let _ = app.emit("inspect-progress", p);
         }
-    };
-    metadata.thumbnails = files.clone();
+        InspectEvent::Thumbnail(t) => {
+            // The webview can only load the file once the asset scope allows it.
+            if let Err(e) = app.asset_protocol_scope().allow_file(&t.path) {
+                tracing::warn!(reason = %e, "thumbnail not allowed in asset scope");
+                return;
+            }
+            let _ = app.emit("inspect-thumbnail", t);
+        }
+    })
+    .inspect_err(|_| {
+        let _ = fs::remove_dir_all(&cache);
+    })?;
+    let mut metadata = inspected.metadata;
     metadata.preview_url = preview.media_url().to_owned();
-    for path in &files {
-        app.asset_protocol_scope()
-            .allow_file(path)
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-    }
-    let preview_file =
-        preview_proxy(&canonical, metadata.duration_micros, &cache).unwrap_or_else(|e| {
-            tracing::warn!(reason = %e, "preview proxy unavailable; serving the original file");
-            canonical.clone()
-        });
     let mut current = state
         .current
         .lock()
         .map_err(|_| AppError::Internal("media state poisoned".into()))?;
+    // A newer load already owns the preview; drop this one's files.
+    if state.latest_load.load(Ordering::SeqCst) != load_id {
+        let _ = fs::remove_dir_all(&inspected.cache);
+        return Ok(metadata);
+    }
     replace_current(
         &mut current,
         CurrentMedia {
-            preview: preview_file,
-            cache,
-            thumbnails: files.into_iter().map(PathBuf::from).collect(),
+            preview: inspected.preview,
+            cache: inspected.cache,
+            thumbnails: inspected.thumbnails,
         },
     );
     Ok(metadata)
@@ -471,6 +622,7 @@ mod tests {
         assert_eq!(current.as_ref().unwrap().preview, input);
         cleanup(&MediaState {
             current: Mutex::new(current),
+            latest_load: AtomicU64::new(0),
         });
     }
     fn atom_order(path: &Path) -> Vec<String> {
@@ -557,6 +709,88 @@ mod tests {
         let metadata = probe(&proxy).unwrap();
         assert_eq!(metadata.codec, "h264");
         assert!((metadata.duration_micros as i64 - 4_000_000).abs() <= 150_000);
+    }
+    fn generated_clip(dir: &Path, seconds: u32) -> PathBuf {
+        let source = dir.join("clip.mp4");
+        let status = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
+            .arg(format!("testsrc2=s=160x120:r=10:d={seconds}"))
+            .args(["-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y"])
+            .arg(&source)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        source
+    }
+    fn collect(source: &Path, load_id: u64, cache: &Path) -> (Inspected, Vec<InspectEvent>) {
+        let mut events = vec![];
+        let inspected = inspect_input(source, load_id, cache, &mut |e| events.push(e)).unwrap();
+        (inspected, events)
+    }
+    #[test]
+    fn inspection_reports_steps_in_order_with_weighted_fractions() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = generated_clip(dir.path(), 3);
+        let (inspected, events) = collect(&source, 7, &dir.path().join("cache"));
+        let progress = events
+            .iter()
+            .filter_map(|e| match e {
+                InspectEvent::Progress(p) => Some(p.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(progress.iter().all(|p| p.load_id == 7));
+        let mut steps = progress.iter().map(|p| p.step).collect::<Vec<_>>();
+        steps.dedup();
+        assert_eq!(
+            steps,
+            [
+                STEP_CONTAINER,
+                STEP_KEYFRAMES,
+                STEP_PREVIEW,
+                STEP_THUMBNAILS
+            ]
+        );
+        let fractions = progress.iter().map(|p| p.fraction).collect::<Vec<_>>();
+        assert_eq!(&fractions[..4], &[0.0, 0.1, 0.3, 0.8]);
+        assert!(fractions.windows(2).all(|w| w[0] <= w[1]));
+        assert!((fractions.last().unwrap() - 1.0).abs() < 1e-9);
+        assert_ne!(inspected.preview, source);
+        assert!(inspected.preview.starts_with(&inspected.cache));
+    }
+    #[test]
+    fn thumbnails_are_reported_one_by_one_and_match_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = generated_clip(dir.path(), 15);
+        let (inspected, events) = collect(&source, 3, &dir.path().join("cache"));
+        let thumbs = events
+            .iter()
+            .filter_map(|e| match e {
+                InspectEvent::Thumbnail(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(thumbs.len(), 14);
+        assert!(thumbs
+            .iter()
+            .enumerate()
+            .all(|(i, t)| t.index == i && t.count == 14 && t.load_id == 3));
+        assert_eq!(
+            thumbs.iter().map(|t| t.path.clone()).collect::<Vec<_>>(),
+            inspected.metadata.thumbnails
+        );
+        assert!(inspected.thumbnails.iter().all(|p| p.is_file()));
+        assert_eq!(inspected.metadata.thumbnail_warning, None);
+    }
+    #[test]
+    fn inspection_rejects_malformed_media_before_later_steps() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad = dir.path().join("bad.mp4");
+        fs::write(&bad, b"not media").unwrap();
+        let mut events = vec![];
+        let result = inspect_input(&bad, 1, &dir.path().join("cache"), &mut |e| events.push(e));
+        assert!(matches!(result, Err(AppError::Probe(_))));
+        assert_eq!(events.len(), 1);
     }
     #[test]
     fn preview_proxy_rejects_unusable_input() {

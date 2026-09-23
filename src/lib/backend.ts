@@ -7,8 +7,8 @@ import type {
 } from "./types";
 export const backend = {
   launchOptions: () => invoke<LaunchOptions>("take_launch_options"),
-  loadInput: async (path: string) => {
-    const m = await invoke<VideoMetadata>("load_input", { path });
+  loadInput: async (path: string, loadId: number) => {
+    const m = await invoke<VideoMetadata>("load_input", { path, loadId });
     return {
       ...m,
       thumbnails: m.thumbnails.map((path) => convertFileSrc(path)),

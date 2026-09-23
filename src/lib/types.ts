@@ -56,3 +56,23 @@ export interface ExportResult {
   /** Where the output actually begins; for `copy` this is the keyframe at or before the selected start, `null` when unknown. */
   effectiveStartMicros: number | null;
 }
+export const INSPECT_STEPS = [
+  "Reading container",
+  "Indexing keyframes",
+  "Building preview",
+  "Building thumbnails",
+] as const;
+export type InspectStep = (typeof INSPECT_STEPS)[number];
+/** Advisory `inspect-progress` event; the `load_input` result stays final. */
+export interface InspectProgress {
+  loadId: number;
+  step: InspectStep;
+  fraction: number;
+}
+/** `inspect-thumbnail` event, sent as soon as thumbnail `index` of `count` is written. */
+export interface InspectThumbnail {
+  loadId: number;
+  index: number;
+  count: number;
+  path: string;
+}

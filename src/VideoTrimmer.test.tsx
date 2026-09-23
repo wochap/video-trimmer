@@ -149,7 +149,10 @@ describe("video loading shell", () => {
       await screen.findByRole("button", { name: "Choose video…" }),
     );
     await waitFor(() =>
-      expect(h.load).toHaveBeenCalledWith("/videos/picked.mp4"),
+      expect(h.load).toHaveBeenCalledWith(
+        "/videos/picked.mp4",
+        expect.any(Number),
+      ),
     );
     expect(
       await screen.findByRole("heading", { name: "one.mp4" }),
@@ -157,7 +160,12 @@ describe("video loading shell", () => {
     expect(screen.getByText("/videos")).toBeVisible();
     h.launch.mockResolvedValueOnce({ ...launch, input: "/videos/cli.mp4" });
     render(<VideoTrimmer />);
-    await waitFor(() => expect(h.load).toHaveBeenCalledWith("/videos/cli.mp4"));
+    await waitFor(() =>
+      expect(h.load).toHaveBeenCalledWith(
+        "/videos/cli.mp4",
+        expect.any(Number),
+      ),
+    );
   });
   it("shows the inspecting state while metadata is pending", async () => {
     let resolve!: (v: VideoMetadata) => void;
@@ -182,6 +190,95 @@ describe("video loading shell", () => {
     expect(
       await screen.findByRole("slider", { name: "Trim start" }),
     ).toBeVisible();
+  });
+  it("shows completed, active, and pending inspection steps", async () => {
+    h.load.mockReturnValueOnce(new Promise(() => {}));
+    h.open.mockResolvedValueOnce("/videos/long.mp4");
+    render(<VideoTrimmer />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Choose video…" }),
+    );
+    await screen.findByText("Inspecting video…");
+    const loadId = h.load.mock.calls[0][1] as number;
+    const steps = () =>
+      within(screen.getByRole("list", { name: "Inspection steps" }))
+        .getAllByRole("listitem")
+        .map((li) => [li.textContent, li.dataset.state]);
+    expect(steps()).toEqual([
+      ["Reading container", "active"],
+      ["Indexing keyframes", "pending"],
+      ["Building preview", "pending"],
+      ["Building thumbnails", "pending"],
+    ]);
+    act(() =>
+      h.events["inspect-progress"]({
+        payload: { loadId, step: "Indexing keyframes", fraction: 0.1 },
+      }),
+    );
+    expect(steps()).toEqual([
+      ["Reading container", "done"],
+      ["Indexing keyframes", "active"],
+      ["Building preview", "pending"],
+      ["Building thumbnails", "pending"],
+    ]);
+    expect(
+      screen.getByRole("progressbar", { name: "Inspecting video" }),
+    ).toHaveAttribute("aria-valuenow", "10");
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent(
+      "Indexing keyframes",
+    );
+  });
+  it("fills the strip progressively and ignores events from a replaced load", async () => {
+    h.load.mockReturnValue(new Promise(() => {}));
+    h.open.mockResolvedValueOnce("/videos/first.mp4");
+    render(<VideoTrimmer />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Choose video…" }),
+    );
+    await screen.findByText("Inspecting video…");
+    const first = h.load.mock.calls[0][1] as number;
+    const thumb = (loadId: number, index: number) =>
+      act(() =>
+        h.events["inspect-thumbnail"]({
+          payload: {
+            loadId,
+            index,
+            count: 14,
+            path: `/cache/${loadId}-${index}.jpg`,
+          },
+        }),
+      );
+    thumb(first, 0);
+    const strip = screen.getByTestId("timeline-placeholder");
+    expect(strip.querySelectorAll("img")).toHaveLength(1);
+    act(() =>
+      h.drag!({ payload: { type: "drop", paths: ["/videos/second.mp4"] } }),
+    );
+    await waitFor(() => expect(h.load).toHaveBeenCalledTimes(2));
+    const second = h.load.mock.calls[1][1] as number;
+    expect(second).not.toBe(first);
+    thumb(first, 1);
+    act(() =>
+      h.events["inspect-progress"]({
+        payload: { loadId: first, step: "Building thumbnails", fraction: 0.9 },
+      }),
+    );
+    const current = screen.getByTestId("timeline-placeholder");
+    expect(current.querySelectorAll("img")).toHaveLength(0);
+    expect(
+      within(current).getAllByTestId("thumbnail-placeholder").length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getByRole("progressbar", { name: "Inspecting video" }),
+    ).toHaveAttribute("aria-valuenow", "0");
+    thumb(second, 0);
+    const imgs = screen
+      .getByTestId("timeline-placeholder")
+      .querySelectorAll("img");
+    expect(imgs).toHaveLength(1);
+    expect(imgs[0].getAttribute("src")).toContain(
+      encodeURIComponent(`/cache/${second}-0.jpg`),
+    );
   });
   it("shows metadata tags in the loaded header", async () => {
     await ready({
@@ -214,7 +311,10 @@ describe("video loading shell", () => {
       } as DragDropEvent),
     );
     await waitFor(() =>
-      expect(h.load).toHaveBeenCalledWith("/videos/drop.mp4"),
+      expect(h.load).toHaveBeenCalledWith(
+        "/videos/drop.mp4",
+        expect.any(Number),
+      ),
     );
     act(() =>
       h.drag!({

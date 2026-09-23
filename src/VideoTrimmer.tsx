@@ -4,10 +4,9 @@ import { ExportDialog } from "@/components/ExportDialog";
 import { Header } from "@/components/Header";
 import { Sidebar } from "@/components/Sidebar";
 import { EmptyState, Inspecting, VideoStage } from "@/components/Stage";
-import { Timeline } from "@/components/Timeline";
+import { ThumbnailStrip, Timeline } from "@/components/Timeline";
 import { Transport } from "@/components/Transport";
 import { useTrimmer } from "@/useTrimmer";
-const PLACEHOLDER_FRAMES = 9;
 export default function VideoTrimmer() {
   const t = useTrimmer();
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -34,7 +33,10 @@ export default function VideoTrimmer() {
       <div className="relative grid min-h-0 min-[960px]:grid-cols-[minmax(0,1fr)_320px]">
         <div className="flex min-h-0 min-w-0 flex-col">
           {inspecting ? (
-            <Inspecting />
+            <Inspecting
+              step={t.inspection.step}
+              fraction={t.inspection.fraction}
+            />
           ) : video ? (
             <VideoStage>
               <video
@@ -114,14 +116,7 @@ export default function VideoTrimmer() {
           <>
             <div className="h-[18px]" />
             {inspecting ? (
-              <div
-                data-testid="timeline-placeholder"
-                className="flex h-[84px] gap-0.5 overflow-hidden rounded-md"
-              >
-                {Array.from({ length: PLACEHOLDER_FRAMES }, (_, i) => (
-                  <div key={i} className="flex-1 bg-neutral-800" />
-                ))}
-              </div>
+              <ThumbnailStrip thumbnails={t.inspection.thumbnails} />
             ) : (
               <div className="flex h-[84px] items-center rounded-md border-[1.5px] border-dashed border-neutral-800 px-5 text-[12.5px] text-neutral-500">
                 Thumbnails and trim handles appear once a video is open.
