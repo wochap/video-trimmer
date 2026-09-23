@@ -74,3 +74,45 @@ The system SHALL let the user exit from the empty or ready state immediately and
 #### Scenario: Cancel during export
 - **WHEN** the user requests cancellation while FFmpeg is running
 - **THEN** the system asks for confirmation before terminating the export process
+
+### Requirement: Active boundary frame feedback
+The system SHALL seek the video preview and visible playhead to the resulting timestamp of a trim boundary whenever the user adjusts that boundary with its timeline handle.
+
+#### Scenario: Move the start handle
+- **WHEN** the user adjusts the start handle with a pointer or keyboard
+- **THEN** the start boundary updates within the valid range and the preview seeks to the updated start timestamp
+
+#### Scenario: Move the end handle
+- **WHEN** the user adjusts the end handle with a pointer or keyboard
+- **THEN** the end boundary updates within the valid range and the preview seeks to the updated end timestamp
+
+#### Scenario: Clamp a boundary adjustment
+- **WHEN** a handle adjustment is clamped to preserve a valid selection
+- **THEN** the preview seeks to the clamped boundary timestamp rather than the unvalidated requested timestamp
+
+### Requirement: Selection preview playback controls
+The system SHALL provide keyboard- and pointer-operable controls named `Preview start`, `Play selection`, and `Preview end`, and each control SHALL play only its defined interval of the current trim selection before pausing with the preview and playhead at the interval end.
+
+#### Scenario: Preview the selection start
+- **WHEN** the user activates `Preview start` for a selection at least two seconds long
+- **THEN** playback starts at the selection start and pauses two seconds later
+
+#### Scenario: Play the full selection
+- **WHEN** the user activates `Play selection`
+- **THEN** playback starts at the selection start and pauses at the selection end
+
+#### Scenario: Preview the selection end
+- **WHEN** the user activates `Preview end` for a selection at least two seconds long
+- **THEN** playback starts two seconds before the selection end and pauses at the selection end
+
+#### Scenario: Preview a short selection edge
+- **WHEN** the user activates `Preview start` or `Preview end` for a selection shorter than two seconds
+- **THEN** playback covers the full selection without seeking outside its boundaries and pauses at the selection end
+
+#### Scenario: Replace an active bounded preview
+- **WHEN** the user activates a selection preview control while another bounded preview is active
+- **THEN** the newly requested interval replaces the prior interval and determines the next automatic stop
+
+#### Scenario: Preview is unavailable
+- **WHEN** no playable video is ready or an export is in progress
+- **THEN** all three selection preview controls are disabled
