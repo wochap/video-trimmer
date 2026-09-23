@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- Source of truth for every raster in this directory. Regenerate with `npm run icons`. -->
+  <defs>
+    <linearGradient id="ai-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3f424d"/>
+      <stop offset="0.55" stop-color="#232532"/>
+      <stop offset="1" stop-color="#161826"/>
+    </linearGradient>
+    <linearGradient id="ai-frame" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9397ab"/>
+      <stop offset="1" stop-color="#3f424d"/>
+    </linearGradient>
+    <linearGradient id="ai-edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9397ab"/>
+      <stop offset="1" stop-color="#292b31"/>
+    </linearGradient>
+    <filter id="ai-glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="14"/>
+    </filter>
+    <clipPath id="ai-sq">
+      <rect x="16" y="16" width="480" height="480" rx="112"/>
+    </clipPath>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#ai-bg)"/>
+  <g clip-path="url(#ai-sq)">
+    <rect x="0" y="160" width="512" height="192" fill="#292b31"/>
+    <g fill="#595d6c">
+      <rect x="40" y="168" width="14" height="10" rx="3"/>
+      <rect x="88" y="168" width="14" height="10" rx="3"/>
+      <rect x="136" y="168" width="14" height="10" rx="3"/>
+      <rect x="184" y="168" width="14" height="10" rx="3"/>
+      <rect x="232" y="168" width="14" height="10" rx="3"/>
+      <rect x="280" y="168" width="14" height="10" rx="3"/>
+      <rect x="328" y="168" width="14" height="10" rx="3"/>
+      <rect x="376" y="168" width="14" height="10" rx="3"/>
+      <rect x="424" y="168" width="14" height="10" rx="3"/>
+      <rect x="40" y="334" width="14" height="10" rx="3"/>
+      <rect x="88" y="334" width="14" height="10" rx="3"/>
+      <rect x="136" y="334" width="14" height="10" rx="3"/>
+      <rect x="184" y="334" width="14" height="10" rx="3"/>
+      <rect x="232" y="334" width="14" height="10" rx="3"/>
+      <rect x="280" y="334" width="14" height="10" rx="3"/>
+      <rect x="328" y="334" width="14" height="10" rx="3"/>
+      <rect x="376" y="334" width="14" height="10" rx="3"/>
+      <rect x="424" y="334" width="14" height="10" rx="3"/>
+    </g>
+    <g fill="url(#ai-frame)">
+      <rect x="-12" y="190" width="84" height="132" rx="10"/>
+      <rect x="84" y="190" width="84" height="132" rx="10"/>
+      <rect x="180" y="190" width="84" height="132" rx="10"/>
+      <rect x="276" y="190" width="84" height="132" rx="10"/>
+      <rect x="372" y="190" width="84" height="132" rx="10"/>
+      <rect x="468" y="190" width="84" height="132" rx="10"/>
+    </g>
+    <rect x="0" y="160" width="132" height="192" fill="#161826" opacity="0.62"/>
+    <rect x="380" y="160" width="132" height="192" fill="#161826" opacity="0.62"/>
+    <g filter="url(#ai-glow)" opacity="0.7" fill="#9184d9">
+      <rect x="120" y="146" width="272" height="220" rx="16"/>
+    </g>
+    <rect x="120" y="146" width="272" height="220" rx="16" fill="#9184d9"/>
+    <rect x="144" y="158" width="224" height="196" rx="6" fill="#292b31"/>
+    <g fill="url(#ai-frame)">
+      <rect x="144" y="190" width="24" height="132"/>
+      <rect x="180" y="190" width="84" height="132" rx="10"/>
+      <rect x="276" y="190" width="84" height="132" rx="10"/>
+    </g>
+    <path d="M128 236v40M136 236v40M376 236v40M384 236v40" stroke="#161826" stroke-width="4" stroke-linecap="round"/>
+    <rect x="266" y="112" width="8" height="286" rx="4" fill="#f3f5fe"/>
+    <rect x="256" y="98" width="28" height="28" rx="6" transform="rotate(45 270 112)" fill="#f3f5fe"/>
+  </g>
+  <rect x="17" y="17" width="478" height="478" rx="111" fill="none" stroke="url(#ai-edge)" stroke-width="2" opacity="0.8"/>
+</svg>
