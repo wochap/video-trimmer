@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { Timeline } from "./Timeline";
+import { rulerTicks, Timeline } from "./Timeline";
 describe("Timeline", () => {
   it("exposes independent labelled sliders", () => {
     render(
@@ -136,5 +136,45 @@ describe("complete timeline interaction", () => {
       pointerId: 2,
     });
     expect(range).toHaveBeenLastCalledWith(100_000, 750_000, "end");
+  });
+});
+describe("adaptive ruler", () => {
+  const labels = (duration: number) => {
+    render(
+      <Timeline
+        duration={duration}
+        start={0}
+        end={duration}
+        playhead={0}
+        step={40_000}
+        thumbnails={[]}
+        onSeek={() => {}}
+        onRange={() => {}}
+      />,
+    );
+    return Array.from(
+      screen.getByTestId("timeline-ruler").querySelectorAll("span.font-mono"),
+      (e) => e.textContent,
+    );
+  };
+  it("labels every second of a 10 s clip with quarter-second minors", () => {
+    expect(labels(10_000_000)).toEqual(
+      Array.from({ length: 11 }, (_, i) => `0:${String(i).padStart(2, "0")}`),
+    );
+    expect(rulerTicks(10_000_000).minors).toHaveLength(30);
+  });
+  it("labels every 30 s of a 4 min clip with 10 s minors", () => {
+    expect(labels(240_000_000)).toEqual([
+      "0:00",
+      "0:30",
+      "1:00",
+      "1:30",
+      "2:00",
+      "2:30",
+      "3:00",
+      "3:30",
+      "4:00",
+    ]);
+    expect(rulerTicks(240_000_000).minors).toHaveLength(16);
   });
 });

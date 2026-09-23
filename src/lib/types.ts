@@ -30,6 +30,8 @@ export interface VideoMetadata {
   codec: string;
   frameRate: number;
   hasAudio: boolean;
+  /** ffprobe codec name of the first audio stream, e.g. `aac`. */
+  audioCodec?: string | null;
   thumbnails: string[];
   thumbnailWarning?: string;
   playbackAcceleration: AccelerationRecord[];

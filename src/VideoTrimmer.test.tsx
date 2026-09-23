@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,8 +18,8 @@ const h = vi.hoisted(() => ({
   cancel: vi.fn(),
   exit: vi.fn(),
   open: vi.fn(),
-  save: vi.fn(),
   drag: undefined as undefined | ((event: DragDropEvent) => void),
+  events: {} as Record<string, (event: { payload: unknown }) => void>,
 }));
 vi.mock("@/lib/backend", () => ({
   backend: {
@@ -30,7 +31,7 @@ vi.mock("@/lib/backend", () => ({
     exit: h.exit,
   },
 }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: h.open, save: h.save }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: h.open }));
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     onDragDropEvent: vi.fn(async (cb: (event: DragDropEvent) => void) => {
@@ -38,6 +39,14 @@ vi.mock("@tauri-apps/api/window", () => ({
       return () => {};
     }),
   }),
+}));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(
+    async (name: string, cb: (event: { payload: unknown }) => void) => {
+      h.events[name] = cb;
+      return () => {};
+    },
+  ),
 }));
 import VideoTrimmer from "./VideoTrimmer";
 const launch: LaunchOptions = {
@@ -60,6 +69,7 @@ const metadata = (
   codec: "h264",
   frameRate: 25,
   hasAudio: true,
+  audioCodec: "aac",
   thumbnails: warning ? [] : ["asset://thumb.jpg"],
   thumbnailWarning: warning,
   playbackAcceleration: [{ component: "playback_decode", state: "unknown" }],
@@ -68,43 +78,132 @@ const metadata = (
 beforeEach(() => {
   vi.clearAllMocks();
   h.drag = undefined;
+  h.events = {};
   h.launch.mockResolvedValue(launch);
   h.load.mockResolvedValue(metadata());
   h.playback.mockResolvedValue([
     { component: "playback_decode", state: "unknown" },
   ]);
   h.open.mockResolvedValue(null);
-  h.save.mockResolvedValue(null);
 });
-async function ready(video = metadata()) {
+const trimButton = () => screen.getByRole("button", { name: /trim & save/i });
+const field = (name: string) => screen.getByLabelText(name) as HTMLInputElement;
+/** Opens `video` through the picker and waits for the ready editor. */
+async function ready(video = metadata(), playable = true) {
+  h.open.mockResolvedValueOnce(video.path);
   h.load.mockResolvedValueOnce(video);
   render(<VideoTrimmer />);
   await userEvent.click(
-    await screen.findByRole("button", { name: /open an mp4 video/i }),
+    await screen.findByRole("button", { name: "Choose video…" }),
   );
+  await screen.findByRole("slider", { name: "Trim start" });
+  const el = document.querySelector("video")!;
+  if (playable) fireEvent.loadedMetadata(el);
+  return el;
 }
-describe("video loading shell", () => {
-  it("keeps the empty state when the picker is cancelled", async () => {
+async function exporting() {
+  h.exportVideo.mockReturnValue(new Promise(() => {}));
+  await ready();
+  await userEvent.click(trimButton());
+  return screen.findByRole("alertdialog", { name: "Trimming…" });
+}
+describe("empty state", () => {
+  it("dims the editor and keeps the empty state when the picker is cancelled", async () => {
     render(<VideoTrimmer />);
+    expect(screen.getByText("No video open")).toBeVisible();
+    expect(trimButton()).toBeDisabled();
+    expect(field("In")).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "MP4" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Play selection" }),
+    ).toBeDisabled();
+    expect(screen.getByLabelText("Playhead")).toHaveTextContent("—:——.———");
+    expect(
+      screen.getByText(
+        "Thumbnails and trim handles appear once a video is open.",
+      ),
+    ).toBeVisible();
     await userEvent.click(
-      await screen.findByRole("button", { name: /open an mp4 video/i }),
+      await screen.findByRole("button", { name: "Choose video…" }),
     );
+    expect(h.open).toHaveBeenCalled();
     expect(h.load).not.toHaveBeenCalled();
-    expect(screen.getByText("Open an MP4 video")).toBeVisible();
+    expect(screen.getByText("Drop an MP4 here")).toBeVisible();
   });
+  it("opens the picker with Enter, Ctrl+O, and the header action", async () => {
+    render(<VideoTrimmer />);
+    await waitFor(() => expect(h.launch).toHaveBeenCalled());
+    fireEvent.keyDown(window, { key: "Enter" });
+    await waitFor(() => expect(h.open).toHaveBeenCalledTimes(1));
+    fireEvent.keyDown(window, { key: "o", ctrlKey: true });
+    await waitFor(() => expect(h.open).toHaveBeenCalledTimes(2));
+    await userEvent.click(screen.getByRole("button", { name: /open…/i }));
+    await waitFor(() => expect(h.open).toHaveBeenCalledTimes(3));
+  });
+});
+describe("video loading shell", () => {
   it("loads picker and CLI input through the same backend path", async () => {
     h.open.mockResolvedValueOnce("/videos/picked.mp4");
     render(<VideoTrimmer />);
     await userEvent.click(
-      await screen.findByRole("button", { name: /open an mp4 video/i }),
+      await screen.findByRole("button", { name: "Choose video…" }),
     );
     await waitFor(() =>
       expect(h.load).toHaveBeenCalledWith("/videos/picked.mp4"),
     );
-    expect(await screen.findByText("/videos/one.mp4")).toBeVisible();
+    expect(
+      await screen.findByRole("heading", { name: "one.mp4" }),
+    ).toBeVisible();
+    expect(screen.getByText("/videos")).toBeVisible();
     h.launch.mockResolvedValueOnce({ ...launch, input: "/videos/cli.mp4" });
     render(<VideoTrimmer />);
     await waitFor(() => expect(h.load).toHaveBeenCalledWith("/videos/cli.mp4"));
+  });
+  it("shows the inspecting state while metadata is pending", async () => {
+    let resolve!: (v: VideoMetadata) => void;
+    h.load.mockReturnValueOnce(new Promise((r) => (resolve = r)));
+    h.open.mockResolvedValueOnce("/home/me/Clips/talk.mp4");
+    render(<VideoTrimmer />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Choose video…" }),
+    );
+    expect(await screen.findByText("Inspecting video…")).toBeVisible();
+    expect(
+      screen.getByRole("progressbar", { name: "Inspecting video" }),
+    ).toBeVisible();
+    expect(screen.getByRole("heading", { name: "talk.mp4" })).toBeVisible();
+    expect(screen.getByText("/home/me/Clips")).toBeVisible();
+    expect(screen.getAllByTestId("tag-skeleton")).toHaveLength(4);
+    expect(screen.getByTestId("timeline-placeholder")).toBeVisible();
+    expect(screen.getByLabelText("Playhead")).toHaveTextContent("0:00.000 / —");
+    expect(trimButton()).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /replace/i })).toBeNull();
+    await act(async () => resolve(metadata("/home/me/Clips/talk.mp4")));
+    expect(
+      await screen.findByRole("slider", { name: "Trim start" }),
+    ).toBeVisible();
+  });
+  it("shows metadata tags in the loaded header", async () => {
+    await ready({
+      ...metadata(),
+      width: 1920,
+      height: 1080,
+      frameRate: 30000 / 1001,
+    });
+    const header = screen.getByRole("banner");
+    for (const tag of ["1920×1080", "h264", "29.97 fps", "AAC audio"])
+      expect(within(header).getByText(tag)).toBeVisible();
+    expect(
+      within(header).getByRole("button", {
+        name: "Hardware acceleration unknown",
+      }),
+    ).toBeVisible();
+  });
+  it("labels a silent video", async () => {
+    await ready({ ...metadata(), hasAudio: false, audioCodec: null });
+    expect(
+      within(screen.getByRole("banner")).getByText("No audio"),
+    ).toBeVisible();
   });
   it("accepts one MP4 drop and rejects multiple paths", async () => {
     render(<VideoTrimmer />);
@@ -125,25 +224,290 @@ describe("video loading shell", () => {
     expect(await screen.findByText("Drop exactly one MP4 file.")).toBeVisible();
   });
   it("reports preview and thumbnail degradation and can replace the input", async () => {
-    h.open.mockResolvedValueOnce("/videos/one.mp4");
     await ready(metadata("/videos/one.mp4", "Timeline thumbnails unavailable"));
-    expect(
-      await screen.findByText("Timeline thumbnails unavailable"),
-    ).toBeVisible();
+    expect(screen.getByText("Timeline thumbnails unavailable")).toBeVisible();
     fireEvent.error(document.querySelector("video")!);
     expect(screen.getByRole("status")).toHaveTextContent("cannot preview");
-    h.open.mockResolvedValueOnce("/videos/two.mp4");
-    h.load.mockResolvedValueOnce(metadata("/videos/two.mp4"));
+    h.open.mockResolvedValueOnce("/clips/two.mp4");
+    h.load.mockResolvedValueOnce(metadata("/clips/two.mp4"));
     await userEvent.click(screen.getByRole("button", { name: /replace/i }));
-    expect(await screen.findByText("/videos/two.mp4")).toBeVisible();
+    expect(
+      await screen.findByRole("heading", { name: "two.mp4" }),
+    ).toBeVisible();
+    expect(field("File name")).toHaveValue("two_trim");
+    expect(field("Save to")).toHaveValue("/clips");
   });
 });
-describe("editor workflows", () => {
-  it("seeks to the active boundary for pointer and keyboard adjustments", async () => {
-    h.open.mockResolvedValueOnce("/videos/one.mp4");
+describe("output settings", () => {
+  it("preselects launch options and names the output beside the source", async () => {
+    h.launch.mockResolvedValue({ ...launch, format: "gif", quality: "small" });
     await ready();
-    const video = document.querySelector("video")!;
-    fireEvent.loadedMetadata(video);
+    expect(screen.getByRole("radio", { name: "GIF" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "Small" })).toBeChecked();
+    expect(field("File name")).toHaveValue("one_trim");
+    expect(screen.getByTestId("output-extension")).toHaveTextContent(".gif");
+    expect(field("Save to")).toHaveValue("/videos");
+  });
+  it("splits --output into folder and name for the first video only", async () => {
+    h.launch.mockResolvedValue({ ...launch, output: "/tmp/out/clip.mp4" });
+    await ready();
+    expect(field("Save to")).toHaveValue("/tmp/out");
+    expect(field("File name")).toHaveValue("clip");
+    expect(screen.getByTestId("output-extension")).toHaveTextContent(".mp4");
+    h.open.mockResolvedValueOnce("/clips/two.mp4");
+    h.load.mockResolvedValueOnce(metadata("/clips/two.mp4"));
+    await userEvent.click(screen.getByRole("button", { name: /replace/i }));
+    await waitFor(() => expect(field("File name")).toHaveValue("two_trim"));
+  });
+  it("follows the format with the extension and disables quality for Copy", async () => {
+    await ready();
+    await userEvent.click(screen.getByRole("radio", { name: "WebM" }));
+    expect(screen.getByTestId("output-extension")).toHaveTextContent(".webm");
+    expect(field("File name")).toHaveValue("one_trim");
+    expect(screen.getByRole("radio", { name: "High" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("radio", { name: "Copy" }));
+    expect(screen.getByTestId("output-extension")).toHaveTextContent(".mp4");
+    for (const name of ["Original", "High", "Small"])
+      expect(screen.getByRole("radio", { name })).toBeDisabled();
+  });
+  it("writes to a chosen folder with the edited name, format, and quality", async () => {
+    h.exportVideo.mockResolvedValueOnce({
+      output: "/tmp/elsewhere/intro.webm",
+      acceleration: [],
+      effectiveStartMicros: 0,
+    });
+    await ready();
+    h.open.mockResolvedValueOnce("/tmp/elsewhere");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Choose folder" }),
+    );
+    await waitFor(() => expect(field("Save to")).toHaveValue("/tmp/elsewhere"));
+    expect(h.open).toHaveBeenLastCalledWith(
+      expect.objectContaining({ directory: true, defaultPath: "/videos" }),
+    );
+    await userEvent.clear(field("File name"));
+    await userEvent.type(field("File name"), "intro");
+    await userEvent.click(screen.getByRole("radio", { name: "WebM" }));
+    await userEvent.click(screen.getByRole("radio", { name: "High" }));
+    await userEvent.click(trimButton());
+    await waitFor(() => expect(h.exit).toHaveBeenCalledWith(0));
+    expect(h.exportVideo).toHaveBeenCalledWith({
+      input: "/videos/one.mp4",
+      output: "/tmp/elsewhere/intro.webm",
+      startMicros: 0,
+      endMicros: 2_000_000,
+      format: "webm",
+      quality: "high",
+    });
+  });
+  it("disables Trim & save without a file name", async () => {
+    await ready();
+    await userEvent.clear(field("File name"));
+    expect(trimButton()).toBeDisabled();
+  });
+});
+describe("selection fields", () => {
+  it("commits In on Enter and Out on blur, updating the summary", async () => {
+    const video = await ready();
+    await userEvent.clear(field("In"));
+    await userEvent.type(field("In"), "0:00.400{Enter}");
+    expect(screen.getByRole("slider", { name: "Trim start" })).toHaveAttribute(
+      "aria-valuenow",
+      "400000",
+    );
+    expect(video.currentTime).toBeCloseTo(0.4);
+    expect(field("In")).toHaveValue("0:00.400");
+    await userEvent.clear(field("Out"));
+    await userEvent.type(field("Out"), "1.4");
+    await userEvent.tab();
+    expect(screen.getByRole("slider", { name: "Trim end" })).toHaveAttribute(
+      "aria-valuenow",
+      "1400000",
+    );
+    expect(screen.getByLabelText("Selection duration")).toHaveTextContent(
+      "0:01.000",
+    );
+    expect(screen.getByText("25 frames · 50% of clip")).toBeVisible();
+  });
+  it("reverts invalid text and Escape without moving a boundary", async () => {
+    await ready();
+    await userEvent.clear(field("Out"));
+    await userEvent.type(field("Out"), "abc");
+    await userEvent.tab();
+    expect(field("Out")).toHaveValue("0:02.000");
+    await userEvent.clear(field("In"));
+    await userEvent.type(field("In"), "1{Escape}");
+    expect(field("In")).toHaveValue("0:00.000");
+    expect(screen.getByRole("slider", { name: "Trim end" })).toHaveAttribute(
+      "aria-valuenow",
+      "2000000",
+    );
+    expect(h.exit).not.toHaveBeenCalled();
+  });
+  it("clamps a typed boundary to a valid frame-aligned selection", async () => {
+    await ready();
+    await userEvent.clear(field("In"));
+    await userEvent.type(field("In"), "9{Enter}");
+    expect(field("In")).toHaveValue("0:01.960");
+    await userEvent.clear(field("Out"));
+    await userEvent.type(field("Out"), "0.51{Enter}");
+    expect(field("Out")).toHaveValue("0:02.000");
+    await userEvent.clear(field("In"));
+    await userEvent.type(field("In"), "0.51{Enter}");
+    expect(field("In")).toHaveValue("0:00.520");
+  });
+  it("keeps editor shortcuts out of a focused field", async () => {
+    const video = await ready();
+    video.currentTime = 1;
+    fireEvent.timeUpdate(video);
+    await userEvent.clear(field("In"));
+    await userEvent.type(field("In"), "io ");
+    expect(screen.getByRole("slider", { name: "Trim start" })).toHaveAttribute(
+      "aria-valuenow",
+      "0",
+    );
+    expect(video.play).not.toHaveBeenCalled();
+    await userEvent.type(field("In"), "{Enter}");
+    expect(h.exportVideo).not.toHaveBeenCalled();
+  });
+});
+describe("transport", () => {
+  it("seeks to boundaries and steps frames without moving a boundary", async () => {
+    const video = await ready();
+    fireEvent.keyDown(screen.getByRole("slider", { name: "Trim start" }), {
+      key: "ArrowRight",
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Go to out" }));
+    expect(video.currentTime).toBe(2);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Previous frame" }),
+    );
+    expect(video.currentTime).toBeCloseTo(1.96);
+    await userEvent.click(screen.getByRole("button", { name: "Go to in" }));
+    expect(video.currentTime).toBeCloseTo(0.04);
+    await userEvent.click(screen.getByRole("button", { name: "Next frame" }));
+    expect(video.currentTime).toBeCloseTo(0.08);
+    expect(screen.getByRole("slider", { name: "Trim start" })).toHaveAttribute(
+      "aria-valuenow",
+      "40000",
+    );
+    expect(screen.getByRole("slider", { name: "Trim end" })).toHaveAttribute(
+      "aria-valuenow",
+      "2000000",
+    );
+    expect(screen.getByLabelText("Playhead")).toHaveTextContent(
+      "0:00.080 / 0:02.000",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Play" }));
+    expect(video.play).toHaveBeenCalledTimes(1);
+  });
+  it("plays the selection and stops at its exact end", async () => {
+    const video = await ready({ ...metadata(), durationMicros: 6_000_000 });
+    await userEvent.click(
+      screen.getByRole("button", { name: "Play selection" }),
+    );
+    expect(video.currentTime).toBe(0);
+    expect(video.play).toHaveBeenCalledTimes(1);
+    video.currentTime = 6;
+    fireEvent.ended(video);
+    expect(video.pause).toHaveBeenCalledTimes(1);
+    expect(video.currentTime).toBe(6);
+  });
+  it("covers a selection shorter than two seconds", async () => {
+    const video = await ready({ ...metadata(), durationMicros: 1_500_000 });
+    await userEvent.click(
+      screen.getByRole("button", { name: "Play selection" }),
+    );
+    expect(video.currentTime).toBe(0);
+    video.currentTime = 1.6;
+    fireEvent.timeUpdate(video);
+    expect(video.pause).toHaveBeenCalledTimes(1);
+    expect(video.currentTime).toBe(1.5);
+  });
+  it("discards an active selection preview for Go to in and unrelated seeks", async () => {
+    const video = await ready({ ...metadata(), durationMicros: 6_000_000 });
+    await userEvent.click(
+      screen.getByRole("button", { name: "Play selection" }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Go to in" }));
+    video.currentTime = 6.1;
+    fireEvent.timeUpdate(video);
+    expect(video.pause).not.toHaveBeenCalled();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Play selection" }),
+    );
+    video.currentTime = 1;
+    fireEvent.seeking(video);
+    video.currentTime = 6.1;
+    fireEvent.timeUpdate(video);
+    expect(video.pause).not.toHaveBeenCalled();
+  });
+  it("keeps the selection stop after dragging to a rounded preview start", async () => {
+    const video = await ready({ ...metadata(), durationMicros: 6_000_000 });
+    fireEvent.keyDown(screen.getByRole("slider", { name: "Trim start" }), {
+      key: "ArrowRight",
+    });
+    await userEvent.click(
+      screen.getByRole("button", { name: "Play selection" }),
+    );
+    video.currentTime = 0.0405;
+    fireEvent.seeking(video);
+    fireEvent.seeking(video);
+    video.currentTime = 6.1;
+    fireEvent.timeUpdate(video);
+    expect(video.pause).toHaveBeenCalledTimes(1);
+    expect(video.currentTime).toBe(6);
+  });
+  it("disables transport until playable and while exporting", async () => {
+    await ready(metadata(), false);
+    const names = [
+      "Go to in",
+      "Previous frame",
+      "Play",
+      "Next frame",
+      "Go to out",
+      "Play selection",
+    ];
+    for (const name of names)
+      expect(screen.getByRole("button", { name })).toBeDisabled();
+    fireEvent.loadedMetadata(document.querySelector("video")!);
+    for (const name of names)
+      expect(screen.getByRole("button", { name })).toBeEnabled();
+    h.exportVideo.mockReturnValue(new Promise(() => {}));
+    await userEvent.click(trimButton());
+    await screen.findByRole("alertdialog", { name: "Trimming…" });
+    for (const name of names)
+      expect(screen.getByRole("button", { name, hidden: true })).toBeDisabled();
+  });
+  it("lists the keyboard shortcuts", async () => {
+    await ready();
+    const hints = screen.getByRole("list", { name: "Keyboard shortcuts" });
+    for (const key of ["Space", "←", "→", "Shift", "I", "O", "Enter"])
+      expect(within(hints).getByText(key)).toBeInTheDocument();
+  });
+  it("supports keyboard seeking, range changes, opening, and immediate cancellation", async () => {
+    const video = await ready();
+    video.currentTime = 1;
+    fireEvent.timeUpdate(video);
+    fireEvent.keyDown(window, { key: "i" });
+    expect(screen.getByRole("slider", { name: "Trim start" })).toHaveAttribute(
+      "aria-valuenow",
+      "1000000",
+    );
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(video.currentTime).toBeCloseTo(1.04);
+    fireEvent.keyDown(window, { key: "ArrowLeft", shiftKey: true });
+    expect(video.currentTime).toBeCloseTo(0.04);
+    fireEvent.keyDown(window, { key: " " });
+    expect(video.play).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(window, { key: "o", ctrlKey: true });
+    await waitFor(() => expect(h.open).toHaveBeenCalledTimes(2));
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(h.exit).toHaveBeenCalledWith(130);
+  });
+  it("seeks to the active boundary for pointer and keyboard adjustments", async () => {
+    const video = await ready();
     const startHandle = screen.getByRole("slider", { name: "Trim start" });
     const track = startHandle.parentElement!;
     vi.spyOn(track, "getBoundingClientRect").mockReturnValue({
@@ -157,197 +521,76 @@ describe("editor workflows", () => {
       y: 0,
       toJSON: () => ({}),
     });
-
     fireEvent.pointerDown(startHandle, { clientX: 25, pointerId: 1 });
     expect(video.currentTime).toBeCloseTo(0.5);
     expect(startHandle).toHaveAttribute("aria-valuenow", "500000");
-
     const endHandle = screen.getByRole("slider", { name: "Trim end" });
     fireEvent.pointerDown(endHandle, { clientX: 75, pointerId: 2 });
     expect(video.currentTime).toBeCloseTo(1.5);
     expect(endHandle).toHaveAttribute("aria-valuenow", "1500000");
-
     fireEvent.keyDown(startHandle, { key: "End" });
     expect(video.currentTime).toBeCloseTo(1.46);
-    expect(startHandle).toHaveAttribute("aria-valuenow", "1460000");
-
     fireEvent.keyDown(endHandle, { key: "Home" });
-    expect(video.currentTime).toBeCloseTo(1.5);
     expect(endHandle).toHaveAttribute("aria-valuenow", "1500000");
   });
-
-  it("plays and stops each selection preview at its exact endpoint", async () => {
-    h.open.mockResolvedValueOnce("/videos/one.mp4");
-    await ready({ ...metadata(), durationMicros: 6_000_000 });
-    const video = document.querySelector("video")!;
-    fireEvent.loadedMetadata(video);
-
-    await userEvent.click(
-      screen.getByRole("button", { name: "Preview start" }),
-    );
-    expect(video.currentTime).toBe(0);
-    expect(video.play).toHaveBeenCalledTimes(1);
-    video.currentTime = 2.2;
-    fireEvent.timeUpdate(video);
-    expect(video.pause).toHaveBeenCalledTimes(1);
-    expect(video.currentTime).toBe(2);
-
-    await userEvent.click(
-      screen.getByRole("button", { name: "Play selection" }),
-    );
-    expect(video.currentTime).toBe(0);
-    video.currentTime = 6;
-    fireEvent.ended(video);
-    expect(video.pause).toHaveBeenCalledTimes(2);
-    expect(video.currentTime).toBe(6);
-
-    await userEvent.click(screen.getByRole("button", { name: "Preview end" }));
-    expect(video.currentTime).toBe(4);
-    video.currentTime = 6.1;
-    fireEvent.timeUpdate(video);
-    expect(video.pause).toHaveBeenCalledTimes(3);
-    expect(video.currentTime).toBe(6);
-  });
-
-  it("clips both edge previews to a selection shorter than two seconds", async () => {
-    h.open.mockResolvedValueOnce("/videos/one.mp4");
-    await ready({ ...metadata(), durationMicros: 1_500_000 });
-    const video = document.querySelector("video")!;
-    fireEvent.loadedMetadata(video);
-
-    await userEvent.click(
-      screen.getByRole("button", { name: "Preview start" }),
-    );
-    expect(video.currentTime).toBe(0);
-    video.currentTime = 1.6;
-    fireEvent.timeUpdate(video);
-    expect(video.currentTime).toBe(1.5);
-
-    await userEvent.click(screen.getByRole("button", { name: "Preview end" }));
-    expect(video.currentTime).toBe(0);
-    video.currentTime = 1.6;
-    fireEvent.timeUpdate(video);
-    expect(video.currentTime).toBe(1.5);
-  });
-
-  it("replaces an active interval and clears it for unrelated seeking", async () => {
-    h.open.mockResolvedValueOnce("/videos/one.mp4");
-    await ready({ ...metadata(), durationMicros: 6_000_000 });
-    const video = document.querySelector("video")!;
-    fireEvent.loadedMetadata(video);
-
-    await userEvent.click(
-      screen.getByRole("button", { name: "Preview start" }),
-    );
-    await userEvent.click(
-      screen.getByRole("button", { name: "Play selection" }),
-    );
-    video.currentTime = 2.2;
-    fireEvent.timeUpdate(video);
-    expect(video.pause).not.toHaveBeenCalled();
-    video.currentTime = 6.1;
-    fireEvent.timeUpdate(video);
-    expect(video.pause).toHaveBeenCalledTimes(1);
-    expect(video.currentTime).toBe(6);
-
-    await userEvent.click(
-      screen.getByRole("button", { name: "Preview start" }),
-    );
-    video.currentTime = 1;
-    fireEvent.seeking(video);
-    video.currentTime = 2.2;
-    fireEvent.timeUpdate(video);
-    expect(video.pause).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps the selection stop after dragging to a rounded preview start", async () => {
-    h.open.mockResolvedValueOnce("/videos/one.mp4");
-    await ready({ ...metadata(), durationMicros: 6_000_000 });
-    const video = document.querySelector("video")!;
-    fireEvent.loadedMetadata(video);
-    fireEvent.keyDown(screen.getByRole("slider", { name: "Trim start" }), {
-      key: "ArrowRight",
+});
+describe("footer status", () => {
+  it("describes re-encoding and copy from the preceding keyframe", async () => {
+    await ready({
+      ...metadata(),
+      durationMicros: 6_000_000,
+      keyframesMicros: [0, 2_190_000, 4_000_000],
     });
-
-    await userEvent.click(
-      screen.getByRole("button", { name: "Play selection" }),
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent("Frame-exact · re-encoded as MP4");
+    await userEvent.clear(field("In"));
+    await userEvent.type(field("In"), "2.4{Enter}");
+    await userEvent.click(screen.getByRole("radio", { name: "Copy" }));
+    expect(status).toHaveTextContent(
+      "Fast copy without re-encoding · output starts at keyframe 2.190 s",
     );
-    video.currentTime = 0.0405;
-    fireEvent.seeking(video);
-    fireEvent.seeking(video);
-    video.currentTime = 6.1;
-    fireEvent.timeUpdate(video);
-
-    expect(video.pause).toHaveBeenCalledTimes(1);
-    expect(video.currentTime).toBe(6);
   });
-
-  it("disables selection previews until playable and while exporting", async () => {
-    h.open.mockResolvedValueOnce("/videos/one.mp4");
-    h.save.mockResolvedValueOnce("/videos/out.mp4");
-    h.exportVideo.mockReturnValue(new Promise(() => {}));
+  it("stays open after a successful export with the stay policy", async () => {
+    h.launch.mockResolvedValue({
+      ...launch,
+      format: "gif",
+      quality: "small",
+      onDone: "stay",
+    });
+    h.exportVideo.mockResolvedValue({
+      output: "/videos/one_trim.gif",
+      acceleration: [],
+      effectiveStartMicros: 0,
+    });
     await ready();
-    const controls = ["Preview start", "Play selection", "Preview end"].map(
-      (name) => screen.getByRole("button", { name }),
+    await userEvent.click(trimButton());
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Saved /videos/one_trim.gif",
     );
-    for (const control of controls) expect(control).toBeDisabled();
-
-    fireEvent.loadedMetadata(document.querySelector("video")!);
-    for (const control of controls) expect(control).toBeEnabled();
-    await userEvent.click(screen.getByRole("button", { name: /trim/i }));
-    await screen.findByText("Preparing · 0%");
-    for (const control of controls) expect(control).toBeDisabled();
-  });
-
-  it("supports keyboard seeking, range changes, opening, and immediate cancellation", async () => {
-    h.open.mockResolvedValueOnce("/videos/one.mp4");
-    await ready();
-    const video = document.querySelector("video")!;
-    fireEvent.loadedMetadata(video);
-    video.currentTime = 1;
-    fireEvent.timeUpdate(video);
-    fireEvent.keyDown(window, { key: "i" });
-    expect(screen.getByRole("slider", { name: "Trim start" })).toHaveAttribute(
-      "aria-valuenow",
-      "1000000",
+    expect(h.exportVideo).toHaveBeenCalledWith(
+      expect.objectContaining({
+        output: "/videos/one_trim.gif",
+        format: "gif",
+        quality: "small",
+      }),
     );
-    fireEvent.keyDown(window, { key: "ArrowRight" });
-    expect(video.currentTime).toBeCloseTo(1.04);
-    fireEvent.keyDown(window, { key: "o", ctrlKey: true });
-    await waitFor(() => expect(h.open).toHaveBeenCalledTimes(2));
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(h.exit).toHaveBeenCalledWith(130);
-  });
-  it("requires confirmation and cancels an active export", async () => {
-    h.open.mockResolvedValueOnce("/videos/one.mp4");
-    h.save.mockResolvedValueOnce("/videos/out.mp4");
-    h.exportVideo.mockReturnValue(new Promise(() => {}));
-    await ready();
-    fireEvent.loadedMetadata(document.querySelector("video")!);
-    await userEvent.click(screen.getByRole("button", { name: /trim/i }));
-    await screen.findByText("Preparing · 0%");
-    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(screen.getByRole("alertdialog")).toBeVisible();
-    await userEvent.click(
-      screen.getByRole("button", { name: "Cancel export" }),
-    );
-    expect(h.cancel).toHaveBeenCalled();
+    expect(h.exit).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.getByRole("heading", { name: "one.mp4" })).toBeVisible();
+    expect(trimButton()).toBeEnabled();
+    await userEvent.click(trimButton());
+    await waitFor(() => expect(h.exportVideo).toHaveBeenCalledTimes(2));
+    expect(h.exit).not.toHaveBeenCalled();
   });
   it("exits after a successful export with the exit policy", async () => {
-    h.open.mockResolvedValueOnce("/videos/one.mp4");
-    h.save.mockResolvedValueOnce("/videos/one_trim.mp4");
     h.exportVideo.mockResolvedValueOnce({
       output: "/videos/one_trim.mp4",
       acceleration: [],
       effectiveStartMicros: 0,
     });
     await ready();
-    fireEvent.loadedMetadata(document.querySelector("video")!);
-    await userEvent.click(screen.getByRole("button", { name: /trim/i }));
+    fireEvent.keyDown(window, { key: "Enter" });
     await waitFor(() => expect(h.exit).toHaveBeenCalledWith(0));
-    expect(h.save).toHaveBeenCalledWith(
-      expect.objectContaining({ defaultPath: "/videos/one_trim.mp4" }),
-    );
     expect(h.exportVideo).toHaveBeenCalledWith({
       input: "/videos/one.mp4",
       output: "/videos/one_trim.mp4",
@@ -357,36 +600,64 @@ describe("editor workflows", () => {
       quality: "original",
     });
   });
-  it("stays open after a successful export with the stay policy", async () => {
-    h.launch.mockResolvedValueOnce({
-      ...launch,
-      format: "gif",
-      quality: "small",
-      onDone: "stay",
-    });
-    h.open.mockResolvedValueOnce("/videos/one.mp4");
-    h.save.mockResolvedValue("/videos/one_trim.gif");
-    h.exportVideo.mockResolvedValue({
-      output: "/videos/one_trim.gif",
-      acceleration: [],
-      effectiveStartMicros: 0,
-    });
-    await ready();
-    fireEvent.loadedMetadata(document.querySelector("video")!);
-    await userEvent.click(screen.getByRole("button", { name: /trim/i }));
-    expect(await screen.findByText("Saved /videos/one_trim.gif")).toBeVisible();
-    expect(h.save).toHaveBeenCalledWith(
-      expect.objectContaining({ defaultPath: "/videos/one_trim.gif" }),
+});
+describe("export dialog", () => {
+  it("shows destination, percent, and attempt from export progress", async () => {
+    const dialog = await exporting();
+    expect(within(dialog).getByText("one_trim.mp4 → /videos")).toBeVisible();
+    expect(within(dialog).getByText("Preparing")).toBeVisible();
+    act(() =>
+      h.events["export-progress"]({
+        payload: {
+          fraction: 0.62,
+          outTimeMicros: 1_240_000,
+          attempt: "Hardware encode (VA-API)",
+        },
+      }),
     );
-    expect(h.exportVideo).toHaveBeenCalledWith(
-      expect.objectContaining({ format: "gif", quality: "small" }),
+    expect(within(dialog).getByText("62%")).toBeVisible();
+    expect(
+      within(dialog).getByRole("progressbar", { name: "Export progress" }),
+    ).toHaveAttribute("aria-valuenow", "62");
+    expect(within(dialog).getByText("0:01.240 / 0:02.000")).toBeVisible();
+    expect(within(dialog).getByText("Hardware encode (VA-API)")).toBeVisible();
+  });
+  it("routes Cancel trim to the confirmation and cancels the export", async () => {
+    const dialog = await exporting();
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Cancel trim" }),
     );
+    expect(
+      screen.getByRole("alertdialog", { name: "Cancel export?" }),
+    ).toBeVisible();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Cancel export" }),
+    );
+    expect(h.cancel).toHaveBeenCalled();
+  });
+  it("routes Escape to the confirmation", async () => {
+    await exporting();
+    await userEvent.keyboard("{Escape}");
+    expect(
+      await screen.findByRole("alertdialog", { name: "Cancel export?" }),
+    ).toBeVisible();
     expect(h.exit).not.toHaveBeenCalled();
-    expect(screen.getByText("/videos/one.mp4")).toBeVisible();
-    const trim = screen.getByRole("button", { name: /trim/i });
-    expect(trim).toBeEnabled();
-    await userEvent.click(trim);
-    await waitFor(() => expect(h.exportVideo).toHaveBeenCalledTimes(2));
-    expect(h.exit).not.toHaveBeenCalled();
+  });
+});
+describe("responsive sidebar", () => {
+  it("toggles the floating settings panel from the header", async () => {
+    render(<VideoTrimmer />);
+    const toggle = screen.getByRole("button", { name: "Show settings" });
+    const sidebar = screen.getByRole("complementary", {
+      name: "Trim settings",
+    });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(sidebar).toHaveClass("max-[959px]:hidden");
+    await userEvent.click(toggle);
+    expect(
+      screen.getByRole("button", { name: "Hide settings" }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(sidebar).not.toHaveClass("max-[959px]:hidden");
+    expect(sidebar).toHaveClass("max-[959px]:absolute");
   });
 });

@@ -21,3 +21,17 @@ export function clampRange(
   const s = Math.max(0, Math.min(start, d - step));
   return { start: s, end: Math.max(s + step, Math.min(end, d)) };
 }
+/**
+ * Parses `h:mm:ss.mmm`, `m:ss.mmm`, `ss.mmm`, or `ss` into microseconds.
+ * Returns `null` for anything else.
+ */
+export function parseTimecode(text: string): number | null {
+  const m = /^(?:(?:(\d+):)?(\d+):)?(\d+)(?:\.(\d{1,6}))?$/.exec(text.trim());
+  if (!m) return null;
+  const [, h, min, s, frac = ""] = m;
+  // Sub-units must stay below 60 once a larger unit is written.
+  if (min !== undefined && Number(s) >= 60) return null;
+  if (h !== undefined && Number(min) >= 60) return null;
+  const seconds = Number(h ?? 0) * 3600 + Number(min ?? 0) * 60 + Number(s);
+  return seconds * MICROS_PER_SECOND + Number(frac.padEnd(6, "0"));
+}

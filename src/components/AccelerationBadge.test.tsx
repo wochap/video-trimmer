@@ -9,7 +9,7 @@ describe("AccelerationBadge", () => {
       />,
     );
     expect(
-      screen.getByRole("button", { name: "Acceleration unknown" }),
+      screen.getByRole("button", { name: "Hardware acceleration unknown" }),
     ).toBeVisible();
   });
   it("shows software fallback", () => {
@@ -24,6 +24,18 @@ describe("AccelerationBadge", () => {
         ]}
       />,
     );
-    expect(screen.getByRole("button", { name: "CPU encoding" })).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Software encoding" }),
+    ).toHaveAccessibleDescription("export encode: software (libx264)");
+  });
+  it("shows active hardware acceleration", () => {
+    render(
+      <AccelerationBadge
+        records={[{ component: "playback_decode", state: "active" }]}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: "Hardware acceleration active" }),
+    ).toBeVisible();
   });
 });

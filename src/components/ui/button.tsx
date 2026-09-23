@@ -1,19 +1,22 @@
 import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
+// Mirrors the Nocturne `.btn`, `.btn-*` classes.
 const variants = cva(
-  "inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition disabled:pointer-events-none disabled:opacity-45",
+  "inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-md border border-transparent px-2.5 py-1.5 text-sm leading-[1.2] font-medium text-text transition-colors disabled:cursor-not-allowed disabled:opacity-45 [&_svg]:block [&_svg]:shrink-0",
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:brightness-110",
-        secondary: "bg-muted text-foreground hover:bg-border",
-        ghost: "hover:bg-muted",
-        destructive: "bg-destructive text-white",
+        primary:
+          "border-accent text-accent hover:bg-accent/12 active:bg-accent/22",
+        secondary: "border-divider hover:bg-text/7 active:bg-text/14",
+        ghost: "px-[2.8px] text-accent hover:bg-accent/10 active:bg-accent/18",
+        danger:
+          "border-danger text-danger hover:bg-danger/12 active:bg-danger/22",
       },
-      size: { default: "h-10", sm: "h-8 px-3", icon: "size-10 p-0" },
+      size: { default: "", icon: "size-9 p-0" },
     },
-    defaultVariants: { variant: "default", size: "default" },
+    defaultVariants: { variant: "secondary", size: "default" },
   },
 );
 export interface ButtonProps
@@ -21,9 +24,10 @@ export interface ButtonProps
     React.ButtonHTMLAttributes<HTMLButtonElement>,
     VariantProps<typeof variants> {}
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, ...props }, ref) => (
+  ({ className, variant, size, type = "button", ...props }, ref) => (
     <button
       ref={ref}
+      type={type}
       className={cn(variants({ variant, size }), className)}
       {...props}
     />

@@ -37,6 +37,7 @@ pub struct VideoMetadata {
     pub codec: String,
     pub frame_rate: f64,
     pub has_audio: bool,
+    pub audio_codec: Option<String>,
     pub thumbnails: Vec<String>,
     pub thumbnail_warning: Option<String>,
     pub playback_acceleration: Vec<AccelerationRecord>,
@@ -190,6 +191,10 @@ fn inspect(path: &Path, require_mp4: bool) -> Result<VideoMetadata, AppError> {
         .and_then(|x| x.parse::<f64>().ok())
         .filter(|x| *x > 0.0)
         .ok_or_else(|| AppError::Probe("missing positive duration".into()))?;
+    let audio = p
+        .streams
+        .iter()
+        .find(|s| s.codec_type.as_deref() == Some("audio"));
     let rate = parse_rate(v.avg_frame_rate.as_deref().or(v.r_frame_rate.as_deref()));
     Ok(VideoMetadata {
         path: path.to_string_lossy().into_owned(),
@@ -199,10 +204,8 @@ fn inspect(path: &Path, require_mp4: bool) -> Result<VideoMetadata, AppError> {
         height: v.height.unwrap_or(0),
         codec: v.codec_name.clone().unwrap_or_else(|| "unknown".into()),
         frame_rate: rate,
-        has_audio: p
-            .streams
-            .iter()
-            .any(|s| s.codec_type.as_deref() == Some("audio")),
+        has_audio: audio.is_some(),
+        audio_codec: audio.and_then(|s| s.codec_name.clone()),
         thumbnails: vec![],
         thumbnail_warning: None,
         playback_acceleration: unknown_playback(),
@@ -398,6 +401,7 @@ mod tests {
         let metadata = probe(&valid).unwrap();
         assert_eq!((metadata.width, metadata.height), (320, 240));
         assert!(!metadata.has_audio);
+        assert_eq!(metadata.audio_codec, None);
         let malformed = dir.path().join("broken.mp4");
         fs::write(&malformed, b"not media").unwrap();
         assert!(matches!(probe(&malformed), Err(AppError::Probe(_))));

@@ -10,6 +10,50 @@ type Props = {
   onSeek: (v: number) => void;
   onRange: (s: number, e: number, boundary: "start" | "end") => void;
 };
+// [major, minor] tick spacing in seconds; the first with at most ten majors wins.
+const TICK_STEPS: [number, number][] = [
+  [0.1, 0.025],
+  [0.25, 0.05],
+  [0.5, 0.1],
+  [1, 0.25],
+  [2, 0.5],
+  [5, 1],
+  [10, 2],
+  [30, 10],
+  [60, 15],
+  [120, 30],
+  [300, 60],
+  [600, 120],
+  [1800, 600],
+  [3600, 900],
+];
+function tickLabel(micros: number, majorSeconds: number) {
+  const total = micros / 1_000_000;
+  const h = Math.floor(total / 3600),
+    m = Math.floor((total % 3600) / 60),
+    s = total % 60;
+  const decimals = majorSeconds >= 1 ? 0 : majorSeconds >= 0.5 ? 1 : 2;
+  const [whole, frac] = s.toFixed(decimals).split(".");
+  const sec = `${whole.padStart(2, "0")}${frac ? `.${frac}` : ""}`;
+  return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+}
+/** Ruler ticks for a clip, in microseconds. */
+export function rulerTicks(duration: number) {
+  const seconds = duration / 1_000_000;
+  const [major, minor] =
+    TICK_STEPS.find(([m]) => seconds / m <= 10) ??
+    TICK_STEPS[TICK_STEPS.length - 1];
+  const majorMicros = Math.round(major * 1_000_000),
+    minorMicros = Math.round(minor * 1_000_000);
+  const majors: { at: number; label: string }[] = [],
+    minors: number[] = [];
+  for (let at = 0; at <= duration; at += minorMicros) {
+    if (at % majorMicros === 0)
+      majors.push({ at, label: tickLabel(at, major) });
+    else minors.push(at);
+  }
+  return { majors, minors };
+}
 export function Timeline({
   duration,
   start,
@@ -51,11 +95,44 @@ export function Timeline({
       ? onRange(Math.max(0, Math.min(v, end - step)), end, which)
       : onRange(start, Math.min(duration, Math.max(v, start + step)), which);
   };
+  const { majors, minors } = rulerTicks(duration);
+  const grip = (
+    <span className="pointer-events-none absolute top-1/2 left-[3px] box-border h-[22px] w-1 -translate-y-1/2 border-x border-bg" />
+  );
+  const handle =
+    "absolute -top-0.5 -bottom-0.5 z-20 w-2.5 cursor-ew-resize rounded-md before:absolute before:inset-y-0 before:-inset-x-1 before:content-['']";
   return (
-    <div>
+    <div className="flex flex-col gap-1.5">
+      <div
+        aria-hidden
+        data-testid="timeline-ruler"
+        className="relative h-[18px] overflow-hidden"
+      >
+        {minors.map((t) => (
+          <span
+            key={t}
+            className="absolute bottom-0 h-1 w-px bg-neutral-700"
+            style={{ left: pct(t) }}
+          />
+        ))}
+        {majors.map((t) => (
+          <span key={t.at}>
+            <span
+              className="absolute bottom-0 h-2 w-px bg-neutral-500"
+              style={{ left: pct(t.at) }}
+            />
+            <span
+              className="absolute top-0 translate-x-1 font-mono text-[10px] leading-none text-neutral-500"
+              style={{ left: pct(t.at) }}
+            >
+              {t.label}
+            </span>
+          </span>
+        ))}
+      </div>
       <div
         ref={ref}
-        className="relative h-20 touch-none overflow-visible rounded-md border bg-muted"
+        className="relative h-[84px] touch-none"
         onPointerDown={(e) => {
           if (e.target === e.currentTarget) onSeek(at(e));
         }}
@@ -63,30 +140,39 @@ export function Timeline({
           if (e.buttons && e.target === e.currentTarget) onSeek(at(e));
         }}
       >
-        {thumbnails.length ? (
-          <div className="pointer-events-none absolute inset-0 flex overflow-hidden rounded-md">
-            {thumbnails.map((t, i) => (
+        <div className="pointer-events-none absolute inset-0 flex gap-0.5 overflow-hidden rounded-md">
+          {thumbnails.length ? (
+            thumbnails.map((t, i) => (
               <img
                 key={i}
                 src={t}
                 alt=""
                 className="h-full min-w-0 flex-1 object-cover"
               />
-            ))}
-          </div>
-        ) : (
-          <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-slate-800 to-slate-600" />
-        )}
+            ))
+          ) : (
+            <div className="flex-1 bg-linear-to-r from-neutral-800 to-neutral-700" />
+          )}
+        </div>
         <div
-          className="pointer-events-none absolute inset-y-0 left-0 bg-black/60"
+          className="pointer-events-none absolute inset-y-0 left-0 rounded-l-md bg-bg/72"
           style={{ width: pct(start) }}
         />
         <div
-          className="pointer-events-none absolute inset-y-0 right-0 bg-black/60"
+          className="pointer-events-none absolute inset-y-0 right-0 rounded-r-md bg-bg/72"
           style={{ width: pct(duration - end) }}
         />
         <div
-          className="pointer-events-none absolute inset-y-0 w-px bg-white shadow"
+          data-testid="timeline-selection"
+          className="pointer-events-none absolute -top-0.5 -bottom-0.5 box-border rounded-md border-2 border-x-10 border-accent shadow-[0_0_18px_color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
+          style={{ left: pct(start), width: pct(end - start) }}
+        />
+        <div
+          className="pointer-events-none absolute -top-2.5 -bottom-1 z-10 w-0.5 -translate-x-px bg-text"
+          style={{ left: pct(playhead) }}
+        />
+        <div
+          className="pointer-events-none absolute -top-3.5 z-10 size-2.5 -translate-x-1/2 rotate-45 rounded-[2px] bg-text"
           style={{ left: pct(playhead) }}
         />
         <div
@@ -97,7 +183,7 @@ export function Timeline({
           aria-valuemax={Math.max(0, end - step)}
           aria-valuenow={start}
           aria-valuetext={formatMicros(start)}
-          className="timeline-handle"
+          className={handle}
           style={{ left: pct(start) }}
           onPointerDown={(e) => {
             e.stopPropagation();
@@ -105,7 +191,9 @@ export function Timeline({
           }}
           onPointerMove={(e) => e.buttons && drag("start", e)}
           onKeyDown={(e) => key("start", e)}
-        />
+        >
+          {grip}
+        </div>
         <div
           role="slider"
           tabIndex={0}
@@ -114,7 +202,7 @@ export function Timeline({
           aria-valuemax={duration}
           aria-valuenow={end}
           aria-valuetext={formatMicros(end)}
-          className="timeline-handle"
+          className={`${handle} -translate-x-full`}
           style={{ left: pct(end) }}
           onPointerDown={(e) => {
             e.stopPropagation();
@@ -122,12 +210,9 @@ export function Timeline({
           }}
           onPointerMove={(e) => e.buttons && drag("end", e)}
           onKeyDown={(e) => key("end", e)}
-        />
-      </div>
-      <div className="mt-2 flex justify-between font-mono text-xs text-muted-foreground">
-        <span>{formatMicros(start)}</span>
-        <span>{formatMicros(playhead)}</span>
-        <span>{formatMicros(end)}</span>
+        >
+          {grip}
+        </div>
       </div>
     </div>
   );
