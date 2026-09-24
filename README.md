@@ -1,6 +1,6 @@
 # video-trimmer
 
-<img width="2464" height="1668" alt="Screenshot_2026-08-29_08-54-15" src="https://github.com/user-attachments/assets/e1835962-3ad7-44a1-abec-490ec577a464" />
+<img width="1231" height="833" alt="grim_Screenshot_2026-09-23_09-42-18" src="https://github.com/user-attachments/assets/cfec390d-1414-4dc3-9e63-e7d1b21c21b2" />
 
 A minimal Wayland-only MP4 trimmer for Hyprland. Select an in/out range, preview it, and export a precise cut as MP4 (H.264, optional VA-API acceleration), WebM, GIF, or a fast stream copy.
 
